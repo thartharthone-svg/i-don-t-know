@@ -1,0 +1,1568 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"/>
+  <meta name="theme-color" content="#0f172a"/>
+  <meta name="mobile-web-app-capable" content="yes"/>
+  <meta name="apple-mobile-web-app-capable" content="yes"/>
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
+  <meta name="apple-mobile-web-app-title" content="PrintServ PRO"/>
+  <title>PrintServ PRO</title>
+  <link rel="manifest" href="manifest.json"/>
+  <!-- App icon for iOS -->
+  <link rel="apple-touch-icon" href="icon.png"/>
+  <style>
+    * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+    body {
+      margin: 0; padding: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: #0f172a;
+      overscroll-behavior: none;
+    }
+    #root { width: 100vw; height: 100vh; overflow: hidden; }
+    input[type="date"]::-webkit-calendar-picker-indicator { opacity: 0.5; filter: invert(1); }
+    select { -webkit-appearance: none; }
+    ::-webkit-scrollbar { display: none; }
+    * { scrollbar-width: none; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+
+  <!-- React + ReactDOM from CDN (no install needed) -->
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <!-- Babel to run JSX in browser -->
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+  <script type="text/babel">
+    const { useState, useEffect, useRef } = React;
+
+
+// ── Inline DB (localStorage for preview/browser, SQLite when in APK) ──
+function genId() { return "r-" + Date.now() + "-" + Math.random().toString(36).slice(2,9); }
+const DB_KEY = "printserv_v5";
+const db = {
+  init: async function() { return true; },
+  getReports: async function() {
+    try { const s = localStorage.getItem(DB_KEY); return s ? JSON.parse(s) : []; } catch(e) { return []; }
+  },
+  saveReport: async function(report) {
+    try {
+      const all = await db.getReports();
+      const id  = report.id || genId();
+      const now = new Date().toISOString();
+      const rec = {...report, id, updatedAt:now, createdAt: report.createdAt || now};
+      const idx = all.findIndex(function(r){ return r.id===id; });
+      if (idx>=0) all[idx]=rec; else all.unshift(rec);
+      localStorage.setItem(DB_KEY, JSON.stringify(all));
+      return rec;
+    } catch(e) { return report; }
+  },
+  deleteReport: async function(id) {
+    try {
+      const all = (await db.getReports()).filter(function(r){ return r.id!==id; });
+      localStorage.setItem(DB_KEY, JSON.stringify(all));
+    } catch(e) {}
+  },
+};
+
+const initialForm = {
+  customerName:"", phone:"", arrivedDate:"", outDate:"",
+  warranty:"over-warranty", ccc:"", serialNumber:"", model:"",
+  machineType:"l-series",
+  faultSymptoms:"", notes:"", status:"in-progress",
+  parts:[],
+  serviceCharges:"",
+};
+
+const MACHINE_TYPES = {
+  "l-series":  { label:"L Series",     icon:"🖨️" },
+  "projector": { label:"Projector",    icon:"📽️" },
+  "lq-series": { label:"LQ Series",   icon:"🖨️" },
+  "scanner":   { label:"Scanner",      icon:"📄" },
+  "tm-series": { label:"TM Series",   icon:"🧾" },
+};
+
+const STATUS_MAP = {
+  "in-progress":{ label:"In Progress", color:"#b45309", bg:"#fef9ee", dot:"#f59e0b", card:"#fef9ee", cardBorder:"#fde68a", cardText:"#78350f", accent:"#f59e0b" },
+  "ready":      { label:"Ready",       color:"#5b21b6", bg:"#f5f3ff", dot:"#8b5cf6", card:"#f5f3ff", cardBorder:"#ddd6fe", cardText:"#4c1d95", accent:"#8b5cf6" },
+  "completed":  { label:"Completed",   color:"#065f46", bg:"#f0fdf9", dot:"#34d399", card:"#f0fdf9", cardBorder:"#a7f3d0", cardText:"#064e3b", accent:"#34d399" },
+};
+
+const fmt = (v) => { const n=parseFloat(v); return isNaN(n)?"0":Math.round(n).toLocaleString(); };
+const calcNum = (r) => Math.round(r.parts.reduce((s,x)=>s+(parseFloat(x.amount)||0)*(parseFloat(x.qty)||1),0)+(parseFloat(r.serviceCharges)||0));
+const calcTotal = (r) => calcNum(r).toLocaleString();
+// genId defined above with db
+const today = () => new Date().toISOString().split("T")[0];
+
+const SAMPLES = [
+  // ── February 2026 ──
+  {id:"s1", machineType:"l-series",  customerName:"Saw Lwin Htwe",     phone:"09257399328", arrivedDate:"2026-02-02", outDate:"2026-02-11", warranty:"over-warranty", ccc:"00957", serialNumber:"X64B008183",  model:"Epson L3110",         faultSymptoms:"BK clogged, print quality poor",           notes:"Cleaned printhead twice.",              status:"completed",   parts:[{itemNumber:"FA04061",  description:"Print Head",             qty:1, amount:"369000"}], serviceCharges:"30000"},
+  {id:"s2", machineType:"l-series",  customerName:"Ko Aung Kyaw",      phone:"09421234567", arrivedDate:"2026-02-10", outDate:"",           warranty:"warranty",      ccc:"01234", serialNumber:"L42C001293",  model:"Epson L4160",         faultSymptoms:"Paper jam on every print",                 notes:"Waiting for spare part.",               status:"in-progress", parts:[{itemNumber:"PA03750",  description:"Paper Feed Roller",      qty:2, amount:"45000"}], serviceCharges:"15000"},
+  {id:"s3", machineType:"l-series",  customerName:"Ma Thandar Oo",     phone:"09778891234", arrivedDate:"2026-02-14", outDate:"2026-02-18", warranty:"over-warranty", ccc:"05678", serialNumber:"L6270-9823",  model:"Epson L6270",         faultSymptoms:"Ink not recognized",                       notes:"",                                      status:"completed",   parts:[{itemNumber:"T502",     description:"Ink Cartridge Set",      qty:1, amount:"120000"}], serviceCharges:"20000"},
+  {id:"s4", machineType:"lq-series", customerName:"U Kyaw Zin",        phone:"09512223344", arrivedDate:"2026-02-17", outDate:"",           warranty:"over-warranty", ccc:"09999", serialNumber:"LQ2190-4421", model:"Epson LQ-2190",       faultSymptoms:"Print head pins broken",                   notes:"Head replaced, test ok.",               status:"ready",       parts:[{itemNumber:"LQ-HEAD",  description:"Print Head LQ-2190",     qty:1, amount:"285000"}], serviceCharges:"25000"},
+  {id:"s5", machineType:"projector", customerName:"Daw Myint Myint",   phone:"09654445566", arrivedDate:"2026-02-19", outDate:"",           warranty:"warranty",      ccc:"03210", serialNumber:"EB5400-7731", model:"Epson EB-X500",       faultSymptoms:"Lamp indicator blinking red",              notes:"Lamp unit needs replacement.",          status:"in-progress", parts:[{itemNumber:"ELPLP96",  description:"Projector Lamp",         qty:1, amount:"210000"}], serviceCharges:"35000"},
+  {id:"s6", machineType:"l-series",  customerName:"Ko Pyae Sone",      phone:"09987654321", arrivedDate:"2026-02-12", outDate:"",           warranty:"over-warranty", ccc:"77777", serialNumber:"L6490-9900",  model:"Epson L6490",         faultSymptoms:"Double sided print not working",           notes:"Duplex unit jammed.",                   status:"in-progress", parts:[{itemNumber:"DPX-L6490",description:"Duplex Unit",            qty:1, amount:"195000"}], serviceCharges:"30000"},
+  {id:"s7", machineType:"scanner",   customerName:"Ma Nwe Ni",         phone:"09555667788", arrivedDate:"2026-02-08", outDate:"2026-02-12", warranty:"warranty",      ccc:"88888", serialNumber:"V39-3344",    model:"Epson Perfection V39",faultSymptoms:"USB not detected by PC",                    notes:"USB board replaced.",                   status:"completed",   parts:[{itemNumber:"USB-V39", description:"USB Board",              qty:1, amount:"65000"}],  serviceCharges:"20000"},
+  {id:"s8", machineType:"projector", customerName:"Daw Aye Aye",       phone:"09333444555", arrivedDate:"2026-02-15", outDate:"",           warranty:"over-warranty", ccc:"10101", serialNumber:"EHTW5700-221",model:"Epson EH-TW5700",     faultSymptoms:"Colour wheel noise",                       notes:"Colour wheel ordered.",                 status:"in-progress", parts:[{itemNumber:"CW-TW5700",description:"Colour Wheel",           qty:1, amount:"320000"}], serviceCharges:"45000"},
+  {id:"s9", machineType:"lq-series", customerName:"Daw Thin Thin",     phone:"09555444333", arrivedDate:"2026-02-18", outDate:"",           warranty:"over-warranty", ccc:"60606", serialNumber:"LQ590-3344",  model:"Epson LQ-590",        faultSymptoms:"Paper thickness lever broken",             notes:"",                                      status:"ready",       parts:[{itemNumber:"LV-590",   description:"Paper Lever",            qty:1, amount:"35000"}],  serviceCharges:"20000"},
+  {id:"s10",machineType:"tm-series", customerName:"Ma Yadanar",        phone:"09333222111", arrivedDate:"2026-02-21", outDate:"",           warranty:"over-warranty", ccc:"80808", serialNumber:"TMT20-7788",  model:"Epson TM-T20",        faultSymptoms:"Power on but no print",                    notes:"",                                      status:"in-progress", parts:[{itemNumber:"PSU-T20",  description:"Power Supply Unit",      qty:1, amount:"125000"}], serviceCharges:"30000"},
+  {id:"s11",machineType:"l-series",  customerName:"Ko Zin Min Tun",    phone:"09222111000", arrivedDate:"2026-02-21", outDate:"",           warranty:"over-warranty", ccc:"90909", serialNumber:"L3210-4455",  model:"Epson L3210",         faultSymptoms:"Ink pads need resetting",                  notes:"Counter reset done.",                   status:"ready",       parts:[{itemNumber:"PAD-L3210",description:"Ink Pad Set",            qty:1, amount:"25000"}],  serviceCharges:"15000"},
+  {id:"s12",machineType:"l-series",  customerName:"Ma Phyu Phyu",      phone:"09111222333", arrivedDate:"2026-02-20", outDate:"",           warranty:"warranty",      ccc:"30303", serialNumber:"L3560-6677",  model:"Epson L3560",         faultSymptoms:"Cannot connect to phone via wifi",         notes:"",                                      status:"in-progress", parts:[],                                                                                    serviceCharges:"20000"},
+  {id:"s13",machineType:"l-series",  customerName:"Daw Khin Mar",      phone:"09123456789", arrivedDate:"2026-02-05", outDate:"2026-02-08", warranty:"warranty",      ccc:"66666", serialNumber:"L3150-7788",  model:"Epson L3150",         faultSymptoms:"Error code 0x97",                          notes:"Main board replaced under warranty.",   status:"completed",   parts:[{itemNumber:"MB-L3150",description:"Main Board",               qty:1, amount:"420000"}], serviceCharges:"0"},
+  {id:"s14",machineType:"tm-series", customerName:"U Win Myint",       phone:"09666554433", arrivedDate:"2026-02-01", outDate:"2026-02-05", warranty:"over-warranty", ccc:"55555", serialNumber:"TMT88-4455",  model:"Epson TM-T88",        faultSymptoms:"Receipt printing faint",                   notes:"",                                      status:"completed",   parts:[{itemNumber:"TPH-T88", description:"Thermal Print Head",     qty:1, amount:"175000"}], serviceCharges:"25000"},
+  {id:"s15",machineType:"l-series",  customerName:"Ko Min Khant",      phone:"09765432109", arrivedDate:"2026-02-24", outDate:"",           warranty:"over-warranty", ccc:"12345", serialNumber:"L3110-8899",  model:"Epson L3110",         faultSymptoms:"All colours blocked after long idle",      notes:"",                                      status:"in-progress", parts:[{itemNumber:"FA04061",  description:"Print Head",             qty:1, amount:"369000"}], serviceCharges:"30000"},
+  {id:"s16",machineType:"scanner",   customerName:"Daw Win Win Kyi",   phone:"09898989898", arrivedDate:"2026-02-22", outDate:"2026-02-25", warranty:"warranty",      ccc:"11223", serialNumber:"DS870-2211",  model:"Epson DS-870",        faultSymptoms:"Scanning slow, ADF misfeed",               notes:"ADF cleaned and rollers replaced.",     status:"completed",   parts:[{itemNumber:"ADF-DS870",description:"ADF Roller Set",         qty:1, amount:"88000"}],  serviceCharges:"25000"},
+
+  // ── January 2026 ──
+  {id:"s17",machineType:"l-series",  customerName:"Ko Zaw Naing",      phone:"09444556677", arrivedDate:"2026-01-15", outDate:"2026-01-20", warranty:"over-warranty", ccc:"11111", serialNumber:"L3250-2231",  model:"Epson L3250",         faultSymptoms:"Wifi disconnects frequently",              notes:"Firmware updated.",                     status:"completed",   parts:[],                                                                                    serviceCharges:"25000"},
+  {id:"s18",machineType:"l-series",  customerName:"Daw Su Su Lwin",    phone:"09988776655", arrivedDate:"2026-01-18", outDate:"2026-01-22", warranty:"warranty",      ccc:"22222", serialNumber:"L5290-3341",  model:"Epson L5290",         faultSymptoms:"Colour prints look faded",                 notes:"",                                      status:"completed",   parts:[{itemNumber:"T03A",     description:"Colour Ink Set",         qty:1, amount:"95000"}],  serviceCharges:"15000"},
+  {id:"s19",machineType:"lq-series", customerName:"Ko Thurein Oo",     phone:"09211223344", arrivedDate:"2026-01-10", outDate:"2026-01-14", warranty:"over-warranty", ccc:"33333", serialNumber:"LQ1150-9910", model:"Epson LQ-1150",       faultSymptoms:"Carriage jam, motor noise",                notes:"Carriage belt replaced.",               status:"completed",   parts:[{itemNumber:"LQ-BELT", description:"Carriage Belt",         qty:1, amount:"45000"},{itemNumber:"LQ-MTR",description:"Carriage Motor",qty:1,amount:"120000"}], serviceCharges:"40000"},
+  {id:"s20",machineType:"projector", customerName:"Ma Hnin Wai",       phone:"09777123456", arrivedDate:"2026-01-25", outDate:"2026-01-30", warranty:"over-warranty", ccc:"44444", serialNumber:"EBX41-1122",  model:"Epson EB-X41",        faultSymptoms:"Image blurry, focus ring broken",          notes:"Focus module replaced.",                status:"completed",   parts:[{itemNumber:"FOCUS-X41",description:"Focus Module",           qty:1, amount:"85000"}],  serviceCharges:"30000"},
+  {id:"s21",machineType:"tm-series", customerName:"Ko Naing Lin",      phone:"09222333444", arrivedDate:"2026-01-22", outDate:"2026-01-26", warranty:"over-warranty", ccc:"20202", serialNumber:"TMU220-1122", model:"Epson TM-U220",       faultSymptoms:"Dot matrix missing lines",                 notes:"",                                      status:"completed",   parts:[{itemNumber:"HEAD-U220",description:"Print Head TM-U220",    qty:1, amount:"145000"}], serviceCharges:"30000"},
+  {id:"s22",machineType:"scanner",   customerName:"U Chit Ko Ko",      phone:"09777888999", arrivedDate:"2026-01-30", outDate:"2026-02-04", warranty:"over-warranty", ccc:"40404", serialNumber:"DS410-8899",  model:"Epson DS-410",        faultSymptoms:"ADF jams on multi page scan",              notes:"ADF roller set replaced.",              status:"completed",   parts:[{itemNumber:"ADF-DS410",description:"ADF Roller Kit",        qty:1, amount:"95000"}],  serviceCharges:"25000"},
+  {id:"s23",machineType:"l-series",  customerName:"Ko Kaung Myat",     phone:"09666777888", arrivedDate:"2026-01-12", outDate:"2026-01-16", warranty:"over-warranty", ccc:"50505", serialNumber:"L1300-1122",  model:"Epson L1300",         faultSymptoms:"A3 prints have white lines",               notes:"Printhead cleaned 3 times.",            status:"completed",   parts:[{itemNumber:"FA12001", description:"Print Head L1300",      qty:1, amount:"450000"}], serviceCharges:"35000"},
+  {id:"s24",machineType:"lq-series", customerName:"Ko Htet Aung",      phone:"09444123456", arrivedDate:"2026-01-05", outDate:"2026-01-09", warranty:"over-warranty", ccc:"99999", serialNumber:"LQ2090-5566", model:"Epson LQ-2090",       faultSymptoms:"Ribbon not advancing",                     notes:"Ribbon mechanism repaired.",            status:"completed",   parts:[{itemNumber:"RBN-2090",description:"Ribbon Mechanism",      qty:1, amount:"75000"}],  serviceCharges:"35000"},
+  {id:"s25",machineType:"projector", customerName:"Ko Wai Yan",        phone:"09444333222", arrivedDate:"2026-01-08", outDate:"2026-01-13", warranty:"warranty",      ccc:"70707", serialNumber:"EBW49-5566",  model:"Epson EB-W49",        faultSymptoms:"Keystone auto not working",                notes:"Sensor replaced under warranty.",       status:"completed",   parts:[{itemNumber:"KS-W49",   description:"Keystone Sensor",       qty:1, amount:"95000"}],  serviceCharges:"0"},
+  {id:"s26",machineType:"scanner",   customerName:"Ko Min Thura",      phone:"09333221100", arrivedDate:"2026-01-20", outDate:"2026-01-25", warranty:"over-warranty", ccc:"07654", serialNumber:"DS530-5512",  model:"Epson DS-530",        faultSymptoms:"Scanner glass scratched",                  notes:"",                                      status:"completed",   parts:[{itemNumber:"SG-530",   description:"Scanner Glass",         qty:1, amount:"75000"}],  serviceCharges:"50000"},
+  {id:"s27",machineType:"tm-series", customerName:"Ma Ei Phyu",        phone:"09789001122", arrivedDate:"2026-01-28", outDate:"2026-02-03", warranty:"warranty",      ccc:"02468", serialNumber:"TMT82-8810",  model:"Epson TM-T82",        faultSymptoms:"Paper not feeding correctly",              notes:"Roller replaced.",                      status:"completed",   parts:[{itemNumber:"RL-T82",   description:"Paper Feed Roller",      qty:1, amount:"55000"}],  serviceCharges:"20000"},
+  {id:"s28",machineType:"l-series",  customerName:"U Myo Thant",       phone:"09600112233", arrivedDate:"2026-01-03", outDate:"2026-01-07", warranty:"warranty",      ccc:"13579", serialNumber:"L4150-3322",  model:"Epson L4150",         faultSymptoms:"Print head alignment failed",              notes:"Alignment done, test prints ok.",       status:"completed",   parts:[],                                                                                    serviceCharges:"20000"},
+  {id:"s29",machineType:"l-series",  customerName:"Ma Aye Chan",       phone:"09700998877", arrivedDate:"2026-01-17", outDate:"2026-01-21", warranty:"over-warranty", ccc:"24680", serialNumber:"L3116-7788",  model:"Epson L3116",         faultSymptoms:"Ink smearing on paper output",             notes:"Fuser rollers cleaned.",                status:"completed",   parts:[{itemNumber:"FR-L3116", description:"Fuser Roller Set",      qty:1, amount:"45000"}],  serviceCharges:"20000"},
+  {id:"s30",machineType:"lq-series", customerName:"Ko Yan Naing Oo",   phone:"09500334455", arrivedDate:"2026-01-26", outDate:"2026-01-29", warranty:"over-warranty", ccc:"86420", serialNumber:"LQ690-1234",  model:"Epson LQ-690",        faultSymptoms:"Characters printing incomplete",           notes:"Print head wires re-soldered.",         status:"completed",   parts:[{itemNumber:"PH-LQ690", description:"Print Head LQ-690",     qty:1, amount:"220000"}], serviceCharges:"35000"},
+  {id:"s31",machineType:"l-series",  customerName:"Daw Yin Yin Htun",  phone:"09400112233", arrivedDate:"2026-01-06", outDate:"",           warranty:"warranty",      ccc:"97531", serialNumber:"L6190-5544",  model:"Epson L6190",         faultSymptoms:"Scanner function not working",             notes:"",                                      status:"ready",       parts:[{itemNumber:"SCN-L6190",description:"Scanner Module",        qty:1, amount:"130000"}], serviceCharges:"25000"},
+
+  // ── December 2025 ──
+  {id:"s32",machineType:"l-series",  customerName:"Ko Sithu Kyaw",     phone:"09250001111", arrivedDate:"2025-12-03", outDate:"2025-12-08", warranty:"over-warranty", ccc:"11100", serialNumber:"L3110-1234",  model:"Epson L3110",         faultSymptoms:"BK ink not printing at all",               notes:"Print head replaced.",                  status:"completed",   parts:[{itemNumber:"FA04061",  description:"Print Head",             qty:1, amount:"369000"}], serviceCharges:"30000"},
+  {id:"s33",machineType:"projector", customerName:"U Kyaw Thu",        phone:"09310002222", arrivedDate:"2025-12-05", outDate:"2025-12-10", warranty:"over-warranty", ccc:"22200", serialNumber:"EB2250-4433", model:"Epson EB-2250U",      faultSymptoms:"Fan noise very loud",                      notes:"Fan unit replaced.",                    status:"completed",   parts:[{itemNumber:"FAN-2250", description:"Cooling Fan Unit",      qty:1, amount:"95000"}],  serviceCharges:"30000"},
+  {id:"s34",machineType:"tm-series", customerName:"Ma Moe Moe Khin",   phone:"09420003333", arrivedDate:"2025-12-07", outDate:"2025-12-11", warranty:"warranty",      ccc:"33300", serialNumber:"TMT70-5566",  model:"Epson TM-T70",        faultSymptoms:"Cutter jammed, paper stuck",               notes:"Cutter blade replaced.",                status:"completed",   parts:[{itemNumber:"CUT-T70",  description:"Auto Cutter Blade",      qty:1, amount:"65000"}],  serviceCharges:"20000"},
+  {id:"s35",machineType:"l-series",  customerName:"Ko Nay Lin Tun",    phone:"09530004444", arrivedDate:"2025-12-10", outDate:"2025-12-15", warranty:"over-warranty", ccc:"44400", serialNumber:"L5190-6677",  model:"Epson L5190",         faultSymptoms:"Fax function dead",                        notes:"Fax board replaced.",                   status:"completed",   parts:[{itemNumber:"FAX-L5190",description:"Fax Board",              qty:1, amount:"185000"}], serviceCharges:"35000"},
+  {id:"s36",machineType:"lq-series", customerName:"Daw Kyi Kyi Win",   phone:"09640005555", arrivedDate:"2025-12-12", outDate:"2025-12-17", warranty:"over-warranty", ccc:"55500", serialNumber:"LQ2180-7788", model:"Epson LQ-2180",       faultSymptoms:"Form feed not advancing",                  notes:"Feed motor replaced.",                  status:"completed",   parts:[{itemNumber:"FM-2180",  description:"Form Feed Motor",        qty:1, amount:"110000"}], serviceCharges:"30000"},
+  {id:"s37",machineType:"scanner",   customerName:"Ko Zeyar Aung",     phone:"09750006666", arrivedDate:"2025-12-14", outDate:"2025-12-18", warranty:"warranty",      ccc:"66600", serialNumber:"V600-8899",   model:"Epson Perfection V600",faultSymptoms:"Colour shift on all scans",               notes:"CCD sensor cleaned.",                   status:"completed",   parts:[],                                                                                    serviceCharges:"45000"},
+  {id:"s38",machineType:"l-series",  customerName:"Ma Su Myat Thwe",   phone:"09860007777", arrivedDate:"2025-12-16", outDate:"2025-12-20", warranty:"over-warranty", ccc:"77700", serialNumber:"L3150-9900",  model:"Epson L3150",         faultSymptoms:"Print head error on startup",              notes:"Head cleaned and recalibrated.",        status:"completed",   parts:[],                                                                                    serviceCharges:"25000"},
+  {id:"s39",machineType:"l-series",  customerName:"U Hla Myint",       phone:"09970008888", arrivedDate:"2025-12-19", outDate:"2025-12-23", warranty:"over-warranty", ccc:"88800", serialNumber:"L6160-1100",  model:"Epson L6160",         faultSymptoms:"WiFi module not found",                    notes:"WiFi module replaced.",                 status:"completed",   parts:[{itemNumber:"WIFI-L6160",description:"WiFi Module",           qty:1, amount:"75000"}],  serviceCharges:"20000"},
+  {id:"s40",machineType:"tm-series", customerName:"Ko Phyo Wai",       phone:"09080009999", arrivedDate:"2025-12-21", outDate:"2025-12-26", warranty:"warranty",      ccc:"99900", serialNumber:"TMT82II-2211",model:"Epson TM-T82II",      faultSymptoms:"Partial print on receipts",                notes:"Thermal head replaced.",                status:"completed",   parts:[{itemNumber:"TH-T82II", description:"Thermal Head",          qty:1, amount:"140000"}], serviceCharges:"25000"},
+  {id:"s41",machineType:"l-series",  customerName:"Daw Thida Oo",      phone:"09190101010", arrivedDate:"2025-12-24", outDate:"2025-12-29", warranty:"over-warranty", ccc:"10010", serialNumber:"L3210-3344",  model:"Epson L3210",         faultSymptoms:"Ink counter full warning",                 notes:"Pad reset and replaced.",               status:"completed",   parts:[{itemNumber:"PAD-L3210",description:"Ink Absorber Pad Set", qty:1, amount:"18000"}],  serviceCharges:"15000"},
+  {id:"s42",machineType:"projector", customerName:"Ko Kyaw Moe Lwin",  phone:"09290202020", arrivedDate:"2025-12-27", outDate:"2025-12-31", warranty:"over-warranty", ccc:"20020", serialNumber:"EBX51-4455",  model:"Epson EB-X51",        faultSymptoms:"No HDMI signal detected",                  notes:"HDMI board replaced.",                  status:"completed",   parts:[{itemNumber:"HDMI-X51", description:"HDMI Input Board",     qty:1, amount:"120000"}], serviceCharges:"30000"},
+
+  // ── November 2025 ──
+  {id:"s43",machineType:"l-series",  customerName:"Ma Khin Moe Aye",   phone:"09390303030", arrivedDate:"2025-11-02", outDate:"2025-11-07", warranty:"warranty",      ccc:"30030", serialNumber:"L4260-5566",  model:"Epson L4260",         faultSymptoms:"ADF not pulling paper",                    notes:"ADF roller replaced.",                  status:"completed",   parts:[{itemNumber:"ADF-L4260",description:"ADF Pickup Roller",    qty:1, amount:"55000"}],  serviceCharges:"20000"},
+  {id:"s44",machineType:"lq-series", customerName:"U Kyaw Soe",        phone:"09490404040", arrivedDate:"2025-11-05", outDate:"2025-11-09", warranty:"over-warranty", ccc:"40040", serialNumber:"LQ590II-7788",model:"Epson LQ-590II",      faultSymptoms:"Top margin shifts every job",              notes:"Carriage reset done.",                  status:"completed",   parts:[],                                                                                    serviceCharges:"30000"},
+  {id:"s45",machineType:"scanner",   customerName:"Ma Thin Zar Win",   phone:"09590505050", arrivedDate:"2025-11-08", outDate:"2025-11-12", warranty:"over-warranty", ccc:"50050", serialNumber:"GT-S650-3344", model:"Epson GT-S650",       faultSymptoms:"Lamp not turning on",                      notes:"Scanner lamp replaced.",                status:"completed",   parts:[{itemNumber:"LMP-GTS650",description:"Scanner Lamp",        qty:1, amount:"60000"}],  serviceCharges:"20000"},
+  {id:"s46",machineType:"l-series",  customerName:"Ko Aung Zaw Oo",    phone:"09690606060", arrivedDate:"2025-11-10", outDate:"2025-11-14", warranty:"over-warranty", ccc:"60060", serialNumber:"L3110-7799",  model:"Epson L3110",         faultSymptoms:"Streaks on all printouts",                 notes:"Printhead deep cleaned.",               status:"completed",   parts:[],                                                                                    serviceCharges:"20000"},
+  {id:"s47",machineType:"projector", customerName:"Daw Sandar Moe",    phone:"09790707070", arrivedDate:"2025-11-13", outDate:"2025-11-18", warranty:"warranty",      ccc:"70070", serialNumber:"EB535W-9900", model:"Epson EB-535W",       faultSymptoms:"Remote control not responding",            notes:"IR sensor replaced.",                   status:"completed",   parts:[{itemNumber:"IR-535W",  description:"IR Receiver Board",     qty:1, amount:"55000"}],  serviceCharges:"20000"},
+  {id:"s48",machineType:"l-series",  customerName:"Ko Htun Htun Oo",   phone:"09890808080", arrivedDate:"2025-11-15", outDate:"2025-11-20", warranty:"over-warranty", ccc:"80080", serialNumber:"L6290-1122",  model:"Epson L6290",         faultSymptoms:"Paper skew on A4 prints",                  notes:"Feed rollers replaced.",                status:"completed",   parts:[{itemNumber:"FR-L6290", description:"Paper Feed Rollers",   qty:2, amount:"35000"}],  serviceCharges:"25000"},
+  {id:"s49",machineType:"tm-series", customerName:"Ma Hay Mar Oo",     phone:"09990909090", arrivedDate:"2025-11-18", outDate:"2025-11-22", warranty:"warranty",      ccc:"90090", serialNumber:"TMU375-3344", model:"Epson TM-U375",       faultSymptoms:"Multiple line drop out",                   notes:"Print head replaced.",                  status:"completed",   parts:[{itemNumber:"HEAD-U375",description:"Print Head TM-U375",   qty:1, amount:"165000"}], serviceCharges:"30000"},
+  {id:"s50",machineType:"lq-series", customerName:"U Thein Zaw",       phone:"09100010001", arrivedDate:"2025-11-20", outDate:"2025-11-24", warranty:"over-warranty", ccc:"10001", serialNumber:"LQ300-5566",  model:"Epson LQ-300+II",     faultSymptoms:"Ribbon advance gear broken",               notes:"Gear set replaced.",                    status:"completed",   parts:[{itemNumber:"GR-LQ300", description:"Ribbon Advance Gear",  qty:1, amount:"35000"}],  serviceCharges:"20000"},
+  {id:"s51",machineType:"l-series",  customerName:"Ma Wai Wai Lwin",   phone:"09200020002", arrivedDate:"2025-11-22", outDate:"2025-11-27", warranty:"warranty",      ccc:"20002", serialNumber:"L3160-7788",  model:"Epson L3160",         faultSymptoms:"Cannot scan from control panel",           notes:"Scan button PCB replaced.",             status:"completed",   parts:[{itemNumber:"PCB-L3160",description:"Control Panel PCB",    qty:1, amount:"85000"}],  serviceCharges:"20000"},
+  {id:"s52",machineType:"scanner",   customerName:"Ko Win Ko Ko",       phone:"09300030003", arrivedDate:"2025-11-25", outDate:"2025-11-29", warranty:"over-warranty", ccc:"30003", serialNumber:"DS760-9900",  model:"Epson DS-760",        faultSymptoms:"Output images have vertical lines",        notes:"CCD array cleaned.",                    status:"completed",   parts:[],                                                                                    serviceCharges:"35000"},
+  {id:"s53",machineType:"l-series",  customerName:"Daw Mya Mya Soe",   phone:"09400040004", arrivedDate:"2025-11-27", outDate:"2025-12-01", warranty:"over-warranty", ccc:"40004", serialNumber:"L5296-1122",  model:"Epson L5296",         faultSymptoms:"Print head clog after ink refill",         notes:"Head soaked and cleaned.",              status:"completed",   parts:[],                                                                                    serviceCharges:"25000"},
+  {id:"s54",machineType:"projector", customerName:"Ko Nyi Nyi Lwin",   phone:"09500050005", arrivedDate:"2025-11-04", outDate:"2025-11-08", warranty:"over-warranty", ccc:"50005", serialNumber:"EB4855WU-11", model:"Epson EB-4855WU",     faultSymptoms:"Lens shift motor failure",                  notes:"Lens motor unit replaced.",             status:"completed",   parts:[{itemNumber:"LM-4855",  description:"Lens Shift Motor",      qty:1, amount:"275000"}], serviceCharges:"40000"},
+  {id:"s55",machineType:"tm-series", customerName:"Ma Myo Myo Khaing", phone:"09600060006", arrivedDate:"2025-11-11", outDate:"2025-11-15", warranty:"warranty",      ccc:"60006", serialNumber:"TMT20II-3344",model:"Epson TM-T20II",      faultSymptoms:"Paper sensor fault error",                 notes:"Paper sensor replaced.",                status:"completed",   parts:[{itemNumber:"SEN-T20II",description:"Paper Sensor",         qty:1, amount:"45000"}],  serviceCharges:"20000"},
+  {id:"s56",machineType:"l-series",  customerName:"U Zaw Min Oo",      phone:"09700070007", arrivedDate:"2025-11-16", outDate:"2025-11-21", warranty:"over-warranty", ccc:"70007", serialNumber:"L1455-5566",  model:"Epson L1455",         faultSymptoms:"A3 right side blank area",                 notes:"Head alignment fixed.",                 status:"completed",   parts:[],                                                                                    serviceCharges:"30000"},
+  {id:"s57",machineType:"lq-series", customerName:"Ko Kyaw Min Htut",  phone:"09800080008", arrivedDate:"2025-11-23", outDate:"2025-11-28", warranty:"over-warranty", ccc:"80008", serialNumber:"LQ630-7788",  model:"Epson LQ-630",        faultSymptoms:"Tractor feed not gripping paper",          notes:"Tractor replaced.",                     status:"completed",   parts:[{itemNumber:"TRC-LQ630",description:"Tractor Feed Unit",    qty:1, amount:"85000"}],  serviceCharges:"25000"},
+  {id:"s58",machineType:"l-series",  customerName:"Daw Nilar Htun",    phone:"09900090009", arrivedDate:"2025-11-29", outDate:"2025-12-03", warranty:"warranty",      ccc:"90009", serialNumber:"L3250-9900",  model:"Epson L3250",         faultSymptoms:"Error B200 on startup",                    notes:"Main PCB replaced under warranty.",     status:"completed",   parts:[{itemNumber:"PCB-L3250",description:"Main Circuit Board",   qty:1, amount:"310000"}], serviceCharges:"0"},
+  {id:"s59",machineType:"scanner",   customerName:"Ko Pyae Phyo Aung", phone:"09100100100", arrivedDate:"2025-11-07", outDate:"2025-11-11", warranty:"over-warranty", ccc:"10100", serialNumber:"ES500WR-1122",model:"Epson ES-500WR",      faultSymptoms:"Double feed not detected",                 notes:"Double feed sensor replaced.",          status:"completed",   parts:[{itemNumber:"DFS-ES500",description:"Double Feed Sensor",   qty:1, amount:"70000"}],  serviceCharges:"25000"},
+  {id:"s60",machineType:"projector", customerName:"Ma Hsu Myat",       phone:"09200200200", arrivedDate:"2025-11-30", outDate:"2025-12-05", warranty:"over-warranty", ccc:"20200", serialNumber:"EBU42-7788",  model:"Epson EB-U42",        faultSymptoms:"Overheating after 30 minutes",             notes:"Thermal paste replaced, vents cleaned.",status:"completed",   parts:[{itemNumber:"TP-EBU42", description:"Thermal Compound Kit", qty:1, amount:"15000"}],  serviceCharges:"35000"},
+];
+
+// ── Icons ──
+function Ico({d, size, color, sw}) {
+  return (
+    <svg width={size||20} height={size||20} viewBox="0 0 24 24" fill="none" stroke={color||"currentColor"} strokeWidth={sw||1.75} strokeLinecap="round" strokeLinejoin="round">
+      <path d={d}/>
+    </svg>
+  );
+}
+function IcoList({c})  { return <Ico color={c||"#64748b"} d="M9 6h11 M9 12h11 M9 18h11 M4 6h.01 M4 12h.01 M4 18h.01"/>; }
+function IcoGrid({c})  { return <Ico color={c||"#64748b"} d="M3 3h7v7H3z M14 3h7v7h-7z M3 14h7v7H3z M14 14h7v7h-7z"/>; }
+function IcoCal({c})   { return <Ico color={c||"#64748b"} d="M8 2v4 M16 2v4 M3 10h18 M5 4h14a2 2 0 012 2v14a2 2 0 01-2 2H5a2 2 0 01-2-2V6a2 2 0 012-2z"/>; }
+function IcoSave({c})  { return <Ico color={c||"#64748b"} d="M19 21H5a2 2 0 01-2-2V5a2 2 0 012-2h11l5 5v11a2 2 0 01-2 2z M17 21v-8H7v8 M7 3v5h8"/>; }
+function IcoPlus()     { return <Ico color="#fff" size={22} d="M12 5v14 M5 12h14"/>; }
+function IcoBack()     { return <Ico color="#fff" size={20} d="M19 12H5 M12 5l-7 7 7 7"/>; }
+function IcoEdit()     { return <Ico color="#fff" size={18} d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7 M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/>; }
+function IcoTrash()    { return <Ico color="#EF4444" size={18} d="M3 6h18 M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/>; }
+function IcoSearch()   { return <Ico color="#94a3b8" size={18} d="M21 21l-4.35-4.35 M17 11A6 6 0 115 11a6 6 0 0112 0z"/>; }
+function IcoX()        { return <Ico color="#94a3b8" size={16} d="M18 6L6 18 M6 6l12 12"/>; }
+function IcoPrint() {
+  return (
+    <svg width={28} height={28} viewBox="0 0 28 28" fill="none">
+      <defs>
+        <linearGradient id="pgrad" x1="5" y1="9" x2="23" y2="21" gradientUnits="userSpaceOnUse">
+          <stop stopColor="#FF6B2B"/>
+          <stop offset="1" stopColor="#E85520"/>
+        </linearGradient>
+      </defs>
+      <rect x="5" y="9" width="18" height="12" rx="2" fill="url(#pgrad)"/>
+      <rect x="9" y="5" width="10" height="6" rx="1.5" fill="#FF8534"/>
+      <rect x="9" y="16" width="10" height="5" rx="1" fill="white" opacity=".7"/>
+      <circle cx="20" cy="13.5" r="1.5" fill="white"/>
+    </svg>
+  );
+}
+
+// ── Small UI components ──
+function StatusPill({status, small}) {
+  const s = STATUS_MAP[status] || STATUS_MAP["in-progress"];
+  const pd = small ? "3px 10px" : "5px 14px";
+  const fs = small ? 9 : 11;
+  return (
+    <span style={{display:"inline-flex",alignItems:"center",gap:4,padding:pd,borderRadius:20,background:s.bg,border:"1px solid "+s.dot+"33",fontSize:fs,fontWeight:700,color:s.color,letterSpacing:.3}}>
+      <span style={{width:5,height:5,borderRadius:"50%",background:s.dot,flexShrink:0}}/>
+      {s.label}
+    </span>
+  );
+}
+
+function WPill({w}) {
+  const isW = w === "warranty";
+  const c = isW ? "#10b981" : "#f59e0b";
+  return (
+    <span style={{display:"inline-flex",alignItems:"center",gap:4,padding:"3px 10px",borderRadius:20,background:c+"22",border:"1px solid "+c+"44",fontSize:10,fontWeight:700,color:c}}>
+      <span style={{width:5,height:5,borderRadius:"50%",background:c,flexShrink:0}}/>
+      {isW ? "Warranty" : "Over Warranty"}
+    </span>
+  );
+}
+
+function Chip({label, active, onClick}) {
+  return (
+    <button onClick={onClick} style={{padding:"5px 12px",borderRadius:20,border:`1px solid ${active?"#FF6B2B":"#e2e8f0"}`,background:active?"rgba(255,107,43,0.15)":"transparent",color:active?"#FF6B2B":"#cbd5e1",fontSize:11,fontWeight:600,cursor:"pointer",fontFamily:"inherit",whiteSpace:"nowrap",flexShrink:0}}>
+      {label}
+    </button>
+  );
+}
+
+function Card({r, onClick}) {
+  const s = STATUS_MAP[r.status] || STATUS_MAP["in-progress"];
+  const mt = (r.machineType && MACHINE_TYPES[r.machineType]) ? MACHINE_TYPES[r.machineType] : {icon:"🖨️", label:"Printer"};
+  return (
+    <div onClick={onClick} style={{margin:"0 16px 10px",borderRadius:22,background:"#ffffff",boxShadow:"0 2px 16px rgba(15,23,42,.07)",cursor:"pointer",WebkitTapHighlightColor:"transparent"}}>
+      <div style={{padding:"16px 16px 14px"}}>
+        {/* Top row — coin avatar + name + amount (Trantor style) */}
+        <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:12}}>
+          <div style={{width:46,height:46,borderRadius:"50%",background:"linear-gradient(135deg,"+s.accent+"40,"+s.accent+"18)",border:"2px solid "+s.accent+"55",display:"flex",alignItems:"center",justifyContent:"center",fontWeight:900,fontSize:18,color:s.accent,flexShrink:0}}>
+            {r.customerName.charAt(0).toUpperCase()}
+          </div>
+          <div style={{flex:1,minWidth:0}}>
+            <div style={{fontWeight:700,fontSize:15,color:"#0f172a",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{r.customerName}</div>
+            <div style={{fontSize:11,color:"#94a3b8",marginTop:2}}>{mt.icon} {r.model||"—"}</div>
+          </div>
+          <div style={{textAlign:"right",flexShrink:0}}>
+            <div style={{fontSize:17,fontWeight:800,color:"#0f172a",letterSpacing:-.5,lineHeight:1}}>{calcTotal(r)}</div>
+            <div style={{fontSize:10,fontWeight:600,color:"#94a3b8",marginTop:2,letterSpacing:.5}}>MMK</div>
+          </div>
+        </div>
+        {/* Bottom row — status + CCC + warranty + date */}
+        <div style={{display:"flex",alignItems:"center",gap:6,flexWrap:"wrap"}}>
+          <StatusPill status={r.status||"in-progress"} small={true}/>
+          {r.ccc && <span style={{fontSize:10,fontWeight:700,color:"#64748b",background:"#f1f5f9",padding:"3px 9px",borderRadius:20}}>CCC {r.ccc}</span>}
+          <WPill w={r.warranty}/>
+          <div style={{flex:1}}/>
+          <span style={{fontSize:10,color:"#cbd5e1",fontWeight:500}}>{r.arrivedDate||""}</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function Section({title, icon, children}) {
+  return (
+    <div style={{margin:"12px 16px",background:"#ffffff",border:"1px solid #F5F0EB",borderRadius:14,overflow:"hidden",boxShadow:"0 2px 8px rgba(0,0,0,.06)"}}>
+      <div style={{padding:"12px 16px",borderBottom:"3px solid #FF6B2B",display:"flex",alignItems:"center",gap:8}}>
+        {icon && <span style={{fontSize:16}}>{icon}</span>}
+        <span style={{fontSize:10,fontWeight:700,color:"#FF6B2B",letterSpacing:1.8,textTransform:"uppercase"}}>{title}</span>
+      </div>
+      <div style={{padding:16}}>{children}</div>
+    </div>
+  );
+}
+
+function Field({label, children}) {
+  return (
+    <div style={{marginBottom:14}}>
+      <label style={{display:"block",fontSize:11,fontWeight:600,color:"#64748b",letterSpacing:1,textTransform:"uppercase",marginBottom:6}}>{label}</label>
+      {children}
+    </div>
+  );
+}
+
+function DarkCard({children, style}) {
+  return (
+    <div style={{background:"#ffffff",border:"1px solid #F5F0EB",borderRadius:16,padding:18,boxShadow:"0 2px 8px rgba(0,0,0,.07)",...style}}>
+      {children}
+    </div>
+  );
+}
+
+function BarChart({reports}) {
+  const months = [];
+  for (let i = 5; i >= 0; i--) {
+    const d = new Date();
+    d.setMonth(d.getMonth() - i);
+    const key = d.toISOString().slice(0,7);
+    const label = d.toLocaleDateString("en-US", {month:"short"});
+    const rev = reports.filter(r => r.arrivedDate && r.arrivedDate.startsWith(key)).reduce((s,r) => s+calcNum(r), 0);
+    months.push({label, rev, cur: i===0});
+  }
+  const maxR = Math.max(...months.map(m => m.rev), 1);
+  return (
+    <div style={{display:"flex",alignItems:"flex-end",gap:8,height:110,marginTop:8}}>
+      {months.map(function(m, i) {
+        return (
+          <div key={i} style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",gap:4}}>
+            <div style={{fontSize:9,fontWeight:700,color:m.cur?"#FF6B2B":"#475569"}}>{m.rev>0 ? Math.round(m.rev/1000)+"k" : ""}</div>
+            <div style={{width:"100%",borderRadius:"4px 4px 0 0",background:m.cur?"#FF6B2B":"#e2e8f0",height:Math.max((m.rev/maxR)*80, m.rev>0?6:2)}}/>
+            <div style={{fontSize:10,fontWeight:m.cur?700:400,color:m.cur?"#FF6B2B":"#475569"}}>{m.label}</div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function DonutChart({wCount, owCount}) {
+  const total = wCount + owCount;
+  const wP = total === 0 ? 50 : (wCount / total) * 100;
+  const r2 = 42;
+  const circ = 2 * Math.PI * r2;
+  const wD = (wP / 100) * circ;
+  return (
+    <div style={{display:"flex",alignItems:"center",gap:20}}>
+      <svg width={108} height={108} viewBox="0 0 108 108" style={{flexShrink:0}}>
+        <circle cx={54} cy={54} r={r2} fill="none" stroke="#1e293b" strokeWidth={14}/>
+        <circle cx={54} cy={54} r={r2} fill="none" stroke="#10b981" strokeWidth={14}
+          strokeDasharray={wD + " " + (circ-wD)} strokeLinecap="round" transform="rotate(-90 54 54)"/>
+        <circle cx={54} cy={54} r={r2} fill="none" stroke="#f59e0b" strokeWidth={14}
+          strokeDasharray={(circ-wD) + " " + wD} strokeLinecap="round"
+          strokeDashoffset={-wD} transform="rotate(-90 54 54)"/>
+        <text x="54" y="50" textAnchor="middle" fontSize="16" fontWeight="800" fill="#f8fafc">{total}</text>
+        <text x="54" y="64" textAnchor="middle" fontSize="10" fill="#64748b" fontWeight="600">JOBS</text>
+      </svg>
+      <div style={{flex:1}}>
+        {[[wCount,"#10b981","Warranty"],[owCount,"#f59e0b","Over Warranty"]].map(function(item) {
+          const count = item[0], color = item[1], label = item[2];
+          return (
+            <div key={label} style={{marginBottom:14}}>
+              <div style={{display:"flex",justifyContent:"space-between",marginBottom:6}}>
+                <div style={{display:"flex",alignItems:"center",gap:8}}>
+                  <div style={{width:8,height:8,borderRadius:"50%",background:color}}/>
+                  <span style={{fontSize:13,color:"#94a3b8"}}>{label}</span>
+                </div>
+                <div style={{textAlign:"right"}}>
+                  <div style={{fontWeight:800,color:color,fontSize:18}}>{count}</div>
+                  <div style={{fontSize:10,color:"#475569"}}>{total===0?0:Math.round(count/total*100)}%</div>
+                </div>
+              </div>
+              <div style={{height:4,background:"#e2e8f0",borderRadius:2}}>
+                <div style={{height:4,background:color,borderRadius:2,width:(total===0?0:count/total*100)+"%"}}/>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// ── Barcode Scanner ──────────────────────────────────────────────
+function BarcodeScanner({ onScan, onClose }) {
+  const [status, setStatus]   = React.useState("loading"); // loading | scanning | error
+  const [errorMsg, setErrorMsg] = React.useState("");
+  const scannerRef = React.useRef(null);
+  const divId      = "barcode-scanner-div";
+
+  React.useEffect(function() {
+    let scanner = null;
+
+    function loadScript(src) {
+      return new Promise(function(resolve, reject) {
+        if (document.querySelector('script[src="' + src + '"]')) { resolve(); return; }
+        const s = document.createElement("script");
+        s.src = src;
+        s.onload = resolve;
+        s.onerror = reject;
+        document.head.appendChild(s);
+      });
+    }
+
+    async function start() {
+      try {
+        await loadScript("https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js");
+
+        scanner = new window.Html5Qrcode(divId);
+        scannerRef.current = scanner;
+
+        await scanner.start(
+          { facingMode: "environment" },
+          { fps: 10, qrbox: { width: 260, height: 120 }, supportedScanTypes: [0, 1] },
+          function(text) {
+            scanner.stop().catch(function(){});
+            onScan(text);
+          },
+          function() {} // ignore parse errors
+        );
+
+        setStatus("scanning");
+      } catch(err) {
+        setStatus("error");
+        if (err && err.toString().includes("permission")) {
+          setErrorMsg("Camera permission denied. Please allow camera access and try again.");
+        } else {
+          setErrorMsg("Could not open camera. Please make sure no other app is using it.");
+        }
+      }
+    }
+
+    start();
+
+    return function() {
+      if (scannerRef.current) {
+        scannerRef.current.stop().catch(function(){});
+      }
+    };
+  }, []);
+
+  function handleClose() {
+    if (scannerRef.current) {
+      scannerRef.current.stop().catch(function(){});
+    }
+    onClose();
+  }
+
+  return (
+    <div style={{position:"fixed",inset:0,zIndex:300,background:"#000",display:"flex",flexDirection:"column"}}>
+      {/* Header */}
+      <div style={{padding:"16px 20px",display:"flex",alignItems:"center",justifyContent:"space-between",background:"rgba(0,0,0,0.85)",flexShrink:0}}>
+        <div>
+          <div style={{fontSize:16,fontWeight:700,color:"#fff"}}>Scan Barcode</div>
+          <div style={{fontSize:12,color:"rgba(255,255,255,0.55)",marginTop:2}}>Point at the serial number barcode</div>
+        </div>
+        <button onClick={handleClose} style={{background:"rgba(255,255,255,0.12)",border:"none",color:"#fff",width:36,height:36,borderRadius:"50%",fontSize:16,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",fontWeight:700}}>✕</button>
+      </div>
+
+      {/* Scanner area */}
+      <div style={{flex:1,position:"relative",overflow:"hidden"}}>
+
+        {/* html5-qrcode mounts here */}
+        <div id={divId} style={{width:"100%",height:"100%"}}/>
+
+        {/* Loading spinner */}
+        {status === "loading" && (
+          <div style={{position:"absolute",inset:0,background:"#111",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:14}}>
+            <div style={{width:44,height:44,border:"3px solid rgba(255,255,255,0.15)",borderTop:"3px solid #FF6B2B",borderRadius:"50%",animation:"bspin 0.8s linear infinite"}}/>
+            <div style={{color:"rgba(255,255,255,0.7)",fontSize:14}}>Starting camera…</div>
+            <style>{`@keyframes bspin { to { transform:rotate(360deg); } }`}</style>
+          </div>
+        )}
+
+        {/* Error state */}
+        {status === "error" && (
+          <div style={{position:"absolute",inset:0,background:"#111",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:16,padding:32,textAlign:"center"}}>
+            <div style={{fontSize:52}}>📷</div>
+            <div style={{color:"#fff",fontSize:15,fontWeight:600,lineHeight:1.5}}>{errorMsg}</div>
+            <button onClick={handleClose} style={{background:"#FF6B2B",border:"none",color:"#fff",padding:"12px 32px",borderRadius:12,fontSize:14,fontWeight:700,cursor:"pointer",marginTop:8}}>Go Back</button>
+          </div>
+        )}
+
+        {/* Scanning hint overlay */}
+        {status === "scanning" && (
+          <div style={{position:"absolute",bottom:0,left:0,right:0,padding:"14px 20px",background:"linear-gradient(transparent,rgba(0,0,0,0.7))",textAlign:"center",pointerEvents:"none"}}>
+            <div style={{fontSize:13,color:"rgba(255,255,255,0.8)"}}>Hold steady — scanning automatically</div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── Swipeable Chart Card — each one independent ───────────────────
+function SwipeChartCard({ title, reports, renderChart, STATUS_MAP }) {
+  const now = new Date();
+  const [offset, setOffset] = React.useState(0);
+  const [anim, setAnim]     = React.useState(null); // null | "left" | "right"
+  const cardRef  = React.useRef(null);
+  const touchRef = React.useRef({ startX:0, startY:0, locked:null, active:false });
+
+  function getKey(off) {
+    const d = new Date(now.getFullYear(), now.getMonth() + off, 1);
+    return d.toISOString().slice(0,7);
+  }
+  function getLabel(off) {
+    const d = new Date(now.getFullYear(), now.getMonth() + off, 1);
+    return d.toLocaleString("default", { month: "short", year: "numeric" });
+  }
+
+  const isNow   = offset === 0;
+  const monthKey   = getKey(offset);
+  const monthLabel = getLabel(offset);
+
+  const mR = React.useMemo(function() {
+    return reports.filter(function(r) {
+      return r.arrivedDate && r.arrivedDate.startsWith(monthKey);
+    });
+  }, [reports, monthKey]);
+
+  function goTo(dir) {
+    if (dir === "next" && isNow) return;
+    setAnim(dir === "prev" ? "left" : "right");
+    setTimeout(function() {
+      setOffset(function(o) { return dir === "prev" ? o - 1 : Math.min(o + 1, 0); });
+      setAnim(null);
+    }, 200);
+  }
+
+  // touch
+  function onTS(e) {
+    const t = touchRef.current;
+    t.startX = e.touches[0].clientX;
+    t.startY = e.touches[0].clientY;
+    t.locked = null; t.active = true;
+  }
+  function onTM(e) {
+    const t = touchRef.current;
+    if (!t.active) return;
+    const dx = e.touches[0].clientX - t.startX;
+    const dy = e.touches[0].clientY - t.startY;
+    if (!t.locked && (Math.abs(dx)>6 || Math.abs(dy)>6))
+      t.locked = Math.abs(dx)>Math.abs(dy) ? "swipe" : "scroll";
+    if (t.locked === "swipe") {
+      if (e.cancelable) e.preventDefault();
+      if (cardRef.current) cardRef.current.style.transform = "translateX("+dx*0.25+"px)";
+    }
+  }
+  function onTE(e) {
+    const t = touchRef.current;
+    if (!t.active) { return; } t.active = false;
+    if (cardRef.current) cardRef.current.style.transform = "";
+    if (t.locked !== "swipe") return;
+    const dx = e.changedTouches[0].clientX - t.startX;
+    if (dx < -50) goTo("prev");
+    else if (dx > 50) goTo("next");
+  }
+  // mouse
+  function onMD(e) {
+    const t = touchRef.current;
+    t.startX = e.clientX; t.startY = e.clientY;
+    t.locked = "swipe"; t.active = true;
+  }
+  function onMM(e) {
+    const t = touchRef.current;
+    if (!t.active || t.locked !== "swipe") return;
+    const dx = e.clientX - t.startX;
+    if (cardRef.current) cardRef.current.style.transform = "translateX("+dx*0.25+"px)";
+  }
+  function onMU(e) {
+    const t = touchRef.current;
+    if (!t.active) return; t.active = false;
+    if (cardRef.current) cardRef.current.style.transform = "";
+    const dx = e.clientX - t.startX;
+    if (dx < -50) goTo("prev");
+    else if (dx > 50) goTo("next");
+  }
+
+  const innerStyle = {
+    transition: anim ? "transform .2s ease, opacity .2s ease" : "none",
+    transform:  anim === "left"  ? "translateX(-24px)" :
+                anim === "right" ? "translateX(24px)" : "translateX(0)",
+    opacity: anim ? 0 : 1,
+  };
+
+  return (
+    <div style={{padding:"0 16px 10px"}}>
+      <div ref={cardRef}
+        style={{background:"#ffffff",borderRadius:16,border:"1px solid #F5F0EB",boxShadow:"0 2px 8px rgba(0,0,0,.07)",overflow:"hidden",willChange:"transform",userSelect:"none"}}
+        onTouchStart={onTS} onTouchMove={onTM} onTouchEnd={onTE}
+        onMouseDown={onMD} onMouseMove={onMM} onMouseUp={onMU} onMouseLeave={onMU}>
+
+        {/* Card header */}
+        <div style={{padding:"12px 14px 10px",display:"flex",alignItems:"center",justifyContent:"space-between",borderBottom:"1px solid #F5F0EB"}}>
+          <div style={{fontSize:11,fontWeight:700,color:"#FF6B2B",letterSpacing:1.4,textTransform:"uppercase"}}>{title}</div>
+          <div style={{display:"flex",alignItems:"center",gap:6}}>
+            <button onClick={function(e){e.stopPropagation();goTo("prev");}}
+              style={{background:"rgba(255,107,43,0.08)",border:"none",color:"#FF6B2B",width:26,height:26,borderRadius:7,fontSize:14,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",fontWeight:700}}>‹</button>
+            <div style={{fontSize:11,fontWeight:700,color:isNow?"#FF6B2B":"#64748b",minWidth:72,textAlign:"center"}}>
+              {isNow ? "● This Month" : monthLabel}
+            </div>
+            <button onClick={function(e){e.stopPropagation();goTo("next");}} disabled={isNow}
+              style={{background:isNow?"#e2e8f0":"rgba(255,107,43,0.08)",border:"none",color:isNow?"#cbd5e1":"#FF6B2B",width:26,height:26,borderRadius:7,fontSize:14,cursor:isNow?"default":"pointer",display:"flex",alignItems:"center",justifyContent:"center",fontWeight:700}}>›</button>
+          </div>
+        </div>
+
+        {/* Chart content */}
+        <div style={{padding:14, ...innerStyle}}>
+          {mR.length === 0
+            ? <div style={{textAlign:"center",padding:"24px 0",color:"#cbd5e1",fontSize:13}}>📭 No data for {monthLabel}</div>
+            : renderChart(mR)
+          }
+        </div>
+
+        {/* Swipe hint */}
+        <div style={{textAlign:"center",paddingBottom:8,fontSize:10,color:"#cbd5e1"}}>← swipe →</div>
+      </div>
+    </div>
+  );
+}
+
+// ── Monthly Charts wrapper ────────────────────────────────────────
+function MonthlyCharts({reports, STATUS_MAP, MACHINE_TYPES}) {
+
+  function SmallDonut({segments, total, label}) {
+    const r2=70, cx=90, cy=90, circ=2*Math.PI*r2;
+    let cum=0;
+    const segs = segments.map(function(s){
+      const pct = total===0 ? 0 : s.count/total;
+      const dash = pct*circ;
+      const off2 = -cum*circ;
+      cum += pct;
+      return {...s, dash, off2};
+    });
+    return (
+      <div style={{display:"flex",alignItems:"center",gap:16}}>
+        <svg width={150} height={150} viewBox="0 0 180 180" style={{flexShrink:0}}>
+          <circle cx={cx} cy={cy} r={r2} fill="none" stroke="#e2e8f0" strokeWidth={24}/>
+          {segs.map(function(s){
+            return (
+              <circle key={s.label} cx={cx} cy={cy} r={r2} fill="none"
+                stroke={s.color} strokeWidth={24}
+                strokeDasharray={s.dash+" "+(circ-s.dash)}
+                strokeDashoffset={s.off2} strokeLinecap="butt"
+                transform={"rotate(-90 "+cx+" "+cy+")"}/>
+            );
+          })}
+          <text x={cx} y={cy-8} textAnchor="middle" fontSize="26" fontWeight="800" fill="#0f172a">{total}</text>
+          <text x={cx} y={cy+12} textAnchor="middle" fontSize="11" fill="#94a3b8" fontWeight="600">{label}</text>
+        </svg>
+        <div style={{flex:1}}>
+          {segs.map(function(s){
+            const pct = total===0 ? 0 : Math.round(s.count/total*100);
+            return (
+              <div key={s.label} style={{marginBottom:12}}>
+                <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:3}}>
+                  <div style={{width:8,height:8,borderRadius:"50%",background:s.color,flexShrink:0}}/>
+                  <span style={{fontSize:12,fontWeight:700,color:"#0f172a",flex:1}}>{s.label}</span>
+                  <span style={{fontSize:12,fontWeight:800,color:s.color}}>{s.count}</span>
+                </div>
+                <div style={{height:4,background:"#e2e8f0",borderRadius:2}}>
+                  <div style={{height:4,background:s.color,borderRadius:2,width:pct+"%",transition:"width .4s"}}/>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{paddingBottom:4}}>
+
+      {/* Card 1 — Warranty */}
+      <SwipeChartCard
+        title="Warranty Overview"
+        reports={reports}
+        renderChart={function(mR) {
+          const wC  = mR.filter(function(r){ return r.warranty==="warranty"; }).length;
+          const owC = mR.filter(function(r){ return r.warranty==="over-warranty"; }).length;
+          const tot = wC + owC;
+          return <SmallDonut total={tot} label="JOBS"
+            segments={[{label:"Warranty",color:"#10b981",count:wC},{label:"Over Warranty",color:"#f59e0b",count:owC}].filter(function(d){return d.count>0;})}/>;
+        }}
+      />
+
+      {/* Card 2 — Small vs Large */}
+      <SwipeChartCard
+        title="Small vs Large L Series"
+        reports={reports}
+        renderChart={function(mR) {
+          const lR    = mR.filter(function(r){ return r.machineType==="l-series"; });
+          const large = lR.filter(function(r){ return /l1[38]\d{2}|l805|l7\d{3}|l15\d{3}/i.test(r.model||""); });
+          const small = lR.filter(function(r){ return !/l1[38]\d{2}|l805|l7\d{3}|l15\d{3}/i.test(r.model||""); });
+          if (lR.length===0) return <div style={{textAlign:"center",padding:"24px 0",color:"#cbd5e1",fontSize:13}}>No L Series jobs</div>;
+          return <SmallDonut total={lR.length} label="L SERIES"
+            segments={[{label:"Small (4-colour)",color:"#FF6B2B",count:small.length},{label:"Large (6-colour)",color:"#3b82f6",count:large.length}].filter(function(d){return d.count>0;})}/>;
+        }}
+      />
+
+      {/* Card 3 — Job Status */}
+      <SwipeChartCard
+        title="Job Status Overview"
+        reports={reports}
+        renderChart={function(mR) {
+          const data = Object.entries(STATUS_MAP).map(function(e){
+            const k=e[0],v=e[1];
+            return {label:v.label, color:v.dot, count:mR.filter(function(r){ return (r.status||"in-progress")===k; }).length};
+          }).filter(function(d){ return d.count>0; });
+          const tot = data.reduce(function(s,d){ return s+d.count; }, 0);
+          if (tot===0) return <div style={{textAlign:"center",padding:"24px 0",color:"#cbd5e1",fontSize:13}}>No data</div>;
+          return <SmallDonut total={tot} label="TOTAL" segments={data}/>;
+        }}
+      />
+
+    </div>
+  );
+}
+
+// ── Main App ──
+function App() {
+  const [view, setView]         = useState("list");
+  const [reports, setReports]   = useState(SAMPLES);
+  const [form, setForm]         = useState({...initialForm});
+  const [editId, setEditId]     = useState(null);
+  const [detailId, setDetailId] = useState(null);
+  const [search, setSearch]     = useState("");
+  const [wFilter, setWFilter]   = useState("all");
+  const [sFilter, setSFilter]   = useState("all");
+  const [mFilter, setMFilter]   = useState("all");
+  const [dailyDate, setDailyDate] = useState(today());
+  const [confirm, setConfirm]   = useState(null);
+  const [scanning, setScanning] = useState(false);
+
+  // ── Init DB ─────────────────────────────────
+  useEffect(function() {
+    db.init().then(function() {
+      return db.getReports();
+    }).then(function(saved) {
+      const hasFullData = saved && saved.length >= 60;
+      if (hasFullData) {
+        setReports(saved);
+      } else {
+        const userReports = saved ? saved.filter(function(r){ return !r.id.startsWith("s"); }) : [];
+        const merged = [...userReports, ...SAMPLES];
+        localStorage.setItem(DB_KEY, JSON.stringify(merged));
+        setReports(merged);
+      }
+    }).catch(function(err) { console.error("DB init error:", err); });
+  }, []);
+
+  function persistSave(report) {
+    db.saveReport(report).then(function(saved) {
+      setReports(function(prev) {
+        const idx = prev.findIndex(function(r) { return r.id === saved.id; });
+        if (idx >= 0) { const n=[...prev]; n[idx]=saved; return n; }
+        return [saved, ...prev];
+      });
+    }).catch(function(err) { console.error("Save error:", err); });
+  }
+
+  function persistDelete(id) {
+    db.deleteReport(id).then(function() {
+      setReports(function(prev) { return prev.filter(function(r) { return r.id !== id; }); });
+    }).catch(function(err) { console.error("Delete error:", err); });
+  }
+
+  const thisMonth = new Date().toISOString().slice(0,7);
+
+  const stats = React.useMemo(function() {
+    // Revenue: only count completed jobs (money actually received)
+    const completedReports = reports.filter(function(r){ return r.status==="completed"; });
+    const totalRev  = completedReports.reduce(function(s,r){ return s+calcNum(r); }, 0);
+    const wCount    = reports.filter(function(r){ return r.warranty==="warranty"; }).length;
+    const owCount   = reports.filter(function(r){ return r.warranty==="over-warranty"; }).length;
+    // Monthly: all jobs that arrived this month (for job count)
+    const mReports  = reports.filter(function(r){ return r.arrivedDate && r.arrivedDate.startsWith(thisMonth); });
+    // Monthly revenue: only completed jobs that were completed this month (outDate this month)
+    const mRev      = reports.filter(function(r){ return r.status==="completed" && r.outDate && r.outDate.startsWith(thisMonth); }).reduce(function(s,r){ return s+calcNum(r); }, 0);
+    // Active jobs count (in-progress + ready)
+    const activeCount = reports.filter(function(r){ return r.status==="in-progress" || r.status==="ready"; }).length;
+    // Pending revenue (jobs not yet completed)
+    const pendingRev = reports.filter(function(r){ return r.status!=="completed"; }).reduce(function(s,r){ return s+calcNum(r); }, 0);
+    return {totalRev, wCount, owCount, mReports, mRev, activeCount, pendingRev};
+  }, [reports, thisMonth]);
+
+  const {totalRev, wCount, owCount, mReports, mRev, activeCount, pendingRev} = stats;
+
+  const dReports  = React.useMemo(function() {
+    return reports.filter(function(r){ return r.arrivedDate===dailyDate || r.outDate===dailyDate; });
+  }, [reports, dailyDate]);
+
+  const dRev = React.useMemo(function() {
+    return dReports.filter(function(r){ return r.outDate===dailyDate && r.status==="completed"; }).reduce(function(s,r){ return s+calcNum(r); }, 0);
+  }, [dReports, dailyDate]);
+
+  const filtered = React.useMemo(function() {
+    return reports.filter(function(r) {
+      const q = search.toLowerCase();
+      const ms = r.customerName.toLowerCase().includes(q) || r.model.toLowerCase().includes(q) ||
+        (r.ccc && r.ccc.includes(q)) || (r.serialNumber && r.serialNumber.toLowerCase().includes(q)) ||
+        (r.phone && r.phone.includes(q));
+      return ms && (wFilter==="all" || r.warranty===wFilter) && (sFilter==="all" || r.status===sFilter) && (mFilter==="all" || r.machineType===mFilter);
+    });
+  }, [reports, search, wFilter, sFilter, mFilter]);
+
+  const sel = reports.find(function(r){ return r.id===detailId; });
+
+  function detectMachineType(model) {
+    const m = model.toLowerCase();
+    if (/\bl[\d]/.test(m) || /l-\d|l\d{3,4}/.test(m)) return "l-series";
+    if (/lq[\s-]?\d|lq\d/.test(m)) return "lq-series";
+    if (/tm[\s-]?\d|tm\d|receipt|pos/.test(m)) return "tm-series";
+    if (/eb[\s-]|eh[\s-]|emp[\s-]|project|epson\s*proj/.test(m)) return "projector";
+    if (/ds[\s-]?\d|ds\d|perfection|scan/.test(m)) return "scanner";
+    return null;
+  }
+
+  function hFC(e) {
+    const {name, value} = e.target;
+    if (name === "model") {
+      const detected = detectMachineType(value);
+      setForm(function(f){ return {...f, model:value, ...(detected ? {machineType:detected} : {})}; });
+    } else {
+      setForm(function(f){ return {...f,[name]:value}; });
+    }
+  }
+  function hPC(i,k,v) { setForm(function(f){ const p=[...f.parts]; p[i]={...p[i],[k]:v}; return {...f,parts:p}; }); }
+  function addPart() { setForm(function(f){ return {...f,parts:[...f.parts,{itemNumber:"",description:"",qty:1,amount:""}]}; }); }
+  function remPart(i) { setForm(function(f){ return {...f,parts:f.parts.filter(function(_,x){ return x!==i; })}; }); }
+
+  function submit() {
+    if (!form.customerName || !form.serialNumber) { alert("Customer name and serial number are required."); return; }
+    const toSave = editId ? {...form, id:editId} : {...form, id:genId()};
+    persistSave(toSave);
+    setEditId(null);
+    setForm({...initialForm});
+    setView("list");
+  }
+
+  const [animating, setAnimating] = React.useState(false);
+
+  function navigateTo(fn) {
+    setAnimating(true);
+    setTimeout(function() { fn(); setAnimating(false); }, 20);
+  }
+
+  function goEdit(rep) { navigateTo(function(){ setForm({...rep}); setEditId(rep.id); setView("form"); }); }
+  function goDel(id) { persistDelete(id); setView("list"); }
+  function goNew() { navigateTo(function(){ setForm({...initialForm}); setEditId(null); setView("form"); }); }
+  function goDetail(id) { navigateTo(function(){ setDetailId(id); setView("detail"); }); }
+  function navTo(v) { setSearch(""); setWFilter("all"); setSFilter("all"); setMFilter("all"); setView(v); }
+  function setStatus(id, k) {
+    const rep = reports.find(function(r){ return r.id===id; });
+    if (rep) persistSave({...rep, status:k});
+  }
+
+  const isMain = view==="list" || view==="dashboard" || view==="daily" || view==="backup";
+
+  const INP = {width:"100%",padding:"11px 14px",border:"1px solid #F5F0EB",borderRadius:10,fontSize:14,fontFamily:"inherit",background:"#ffffff",color:"#0f172a",outline:"none",boxSizing:"border-box"};
+  const BTN_SUBMIT = {flex:2,background:"linear-gradient(135deg,#FF6B2B,#E85520)",border:"none",color:"#fff",padding:"13px",borderRadius:12,cursor:"pointer",fontSize:14,fontFamily:"inherit",fontWeight:700,boxShadow:"0 4px 20px rgba(255,107,43,.3)"};
+  const BTN_CANCEL = {flex:1,background:"transparent",border:"2px solid #F5F0EB",color:"#94a3b8",padding:"13px",borderRadius:12,cursor:"pointer",fontSize:14,fontFamily:"inherit",fontWeight:600};
+
+  return (
+    <div style={{fontFamily:"'DM Sans','Segoe UI',sans-serif",background:"#f1f5f9",height:"100vh",maxWidth:480,margin:"0 auto",display:"flex",flexDirection:"column",position:"relative",boxShadow:"0 0 80px rgba(0,0,0,.8)",overflowX:"hidden"}}>
+      <style>{`
+        @keyframes fadeIn {
+          from { opacity: 0; }
+          to   { opacity: 1; }
+        }
+        .slide-in { animation: fadeIn .8s ease both; }
+        .slide-up { animation: fadeIn .8s ease both; }
+      `}</style>
+
+      {/* Confirm dialog */}
+      {/* Barcode Scanner */}
+      {scanning && (
+        <BarcodeScanner
+          onScan={function(code) {
+            setForm(function(f) { return {...f, serialNumber: code}; });
+            setScanning(false);
+          }}
+          onClose={function() { setScanning(false); }}
+        />
+      )}
+
+      {confirm && (
+        <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,.7)",zIndex:200,display:"flex",alignItems:"center",justifyContent:"center",padding:24}}>
+          <div style={{background:"#0f172a",border:"1px solid #2A2018",borderRadius:20,padding:24,width:"100%",maxWidth:320}}>
+            <div style={{fontSize:16,fontWeight:700,color:"#f8fafc",marginBottom:8}}>{confirm.title}</div>
+            <div style={{fontSize:14,color:"#64748b",marginBottom:20}}>{confirm.msg}</div>
+            <div style={{display:"flex",gap:10}}>
+              <button style={BTN_CANCEL} onClick={function(){ setConfirm(null); }}>Cancel</button>
+              <button style={{...BTN_SUBMIT,flex:1}} onClick={function(){ confirm.onOk(); setConfirm(null); }}>Confirm</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Status bar */}
+      {/* App bar — Trantor premium dark */}
+      <div style={{background:"#0f172a",flexShrink:0}}>
+        {isMain ? (
+          <div style={{padding:"16px 18px",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+            {/* Logo */}
+            <div style={{display:"flex",alignItems:"center",gap:11}}>
+              <div style={{background:"linear-gradient(135deg,#FF6B2B,#e85520)",borderRadius:14,padding:"8px 10px",display:"flex",boxShadow:"0 0 16px rgba(255,107,43,.5)"}}><IcoPrint/></div>
+              <div>
+                <div style={{display:"flex",alignItems:"baseline",gap:4}}>
+                  <span style={{color:"#f8fafc",fontWeight:900,fontSize:19,letterSpacing:.5,fontStyle:"italic"}}>PRINTSERV</span>
+                  <span style={{color:"#FF6B2B",fontWeight:900,fontSize:19,letterSpacing:.5,fontStyle:"italic"}}>PRO</span>
+                </div>
+                <div style={{fontSize:9,color:"#475569",letterSpacing:2,textTransform:"uppercase",marginTop:1}}>Service Management</div>
+              </div>
+            </div>
+            {/* Right icons */}
+            <div style={{display:"flex",alignItems:"center",gap:8}}>
+              <div style={{width:36,height:36,borderRadius:12,background:"rgba(255,255,255,.07)",border:"1px solid rgba(255,255,255,.1)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:15}}>🔔</div>
+              <div style={{width:36,height:36,borderRadius:12,background:"linear-gradient(135deg,#FF6B2B,#e85520)",display:"flex",alignItems:"center",justifyContent:"center",fontWeight:900,fontSize:14,color:"#fff",boxShadow:"0 0 12px rgba(255,107,43,.45)"}}>P</div>
+            </div>
+          </div>
+        ) : (
+          <div style={{padding:"16px 18px",display:"flex",alignItems:"center",gap:10}}>
+            <button style={{background:"rgba(255,255,255,.08)",border:"1px solid rgba(255,255,255,.1)",cursor:"pointer",padding:"8px 10px",borderRadius:12,display:"flex",alignItems:"center"}} onClick={function(){ setView("list"); setEditId(null); }}>
+              <IcoBack/>
+            </button>
+            <span style={{color:"#f8fafc",fontWeight:800,fontSize:17}}>{view==="form" ? (editId?"Edit Report":"New Report") : "Report Detail"}</span>
+          </div>
+        )}
+      </div>
+
+      {/* Body */}
+      <div style={{flex:1,overflowY:"auto",overflowX:"hidden"}}>
+
+        {/* LIST */}
+        {view==="list" && (
+          <div style={{background:"#f1f5f9",minHeight:"100%"}}>
+
+            {/* ── Trantor-style header with summary ── */}
+            <div style={{padding:"20px 16px 16px"}}>
+              <div style={{fontSize:13,fontWeight:600,color:"#94a3b8",letterSpacing:.5,marginBottom:2}}>PrintServ Pro</div>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-end"}}>
+                <div>
+                  <div style={{fontSize:26,fontWeight:900,color:"#0f172a",letterSpacing:-.5,lineHeight:1}}>
+                    {reports.filter(function(r){return r.status!=="completed";}).length}
+                  </div>
+                  <div style={{fontSize:12,color:"#94a3b8",marginTop:4}}>Active jobs right now</div>
+                </div>
+                <div style={{textAlign:"right"}}>
+                  <div style={{fontSize:13,fontWeight:700,color:"#10b981"}}>
+                    +{reports.filter(function(r){return r.status==="completed";}).length} done
+                  </div>
+                  <div style={{fontSize:11,color:"#94a3b8",marginTop:2}}>{reports.length} total</div>
+                </div>
+              </div>
+
+              {/* ── Status summary pill row (Trantor Transfer/Receive style) ── */}
+              <div style={{display:"flex",gap:10,marginTop:16}}>
+                {[
+                  {label:"In Progress", count:reports.filter(function(r){return r.status==="in-progress";}).length, color:"#f59e0b", bg:"#fef9ee"},
+                  {label:"Ready",       count:reports.filter(function(r){return r.status==="ready";}).length,       color:"#8b5cf6", bg:"#f5f3ff"},
+                  {label:"Completed",   count:reports.filter(function(r){return r.status==="completed";}).length,   color:"#34d399", bg:"#f0fdf9"},
+                ].map(function(item){
+                  return (
+                    <button key={item.label} onClick={function(){
+                      const map={"In Progress":"in-progress","Ready":"ready","Completed":"completed"};
+                      const k=map[item.label]; setSFilter(sFilter===k?"all":k);
+                    }} style={{flex:1,background:sFilter==={"In Progress":"in-progress","Ready":"ready","Completed":"completed"}[item.label]?item.color:item.bg,borderRadius:16,padding:"10px 6px",border:"none",cursor:"pointer",transition:"all .15s",boxShadow:sFilter==={"In Progress":"in-progress","Ready":"ready","Completed":"completed"}[item.label]?"0 4px 12px "+item.color+"55":"none"}}>
+                      <div style={{fontSize:20,fontWeight:800,color:sFilter==={"In Progress":"in-progress","Ready":"ready","Completed":"completed"}[item.label]?"#fff":item.color,lineHeight:1}}>{item.count}</div>
+                      <div style={{fontSize:9,fontWeight:600,color:sFilter==={"In Progress":"in-progress","Ready":"ready","Completed":"completed"}[item.label]?"rgba(255,255,255,.85)":item.color,marginTop:4,letterSpacing:.3}}>{item.label}</div>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* ── Search bar ── */}
+            <div style={{margin:"0 16px 10px",background:"#ffffff",borderRadius:16,boxShadow:"0 1px 8px rgba(15,23,42,.06)",display:"flex",alignItems:"center",gap:10,padding:"12px 16px"}}>
+              <IcoSearch/>
+              <input style={{flex:1,border:"none",outline:"none",fontSize:14,fontFamily:"inherit",background:"transparent",color:"#0f172a"}} placeholder="Search name, model, CCC..." value={search} onChange={function(e){ setSearch(e.target.value); }}/>
+              {search && <button style={{background:"none",border:"none",cursor:"pointer",padding:0,display:"flex"}} onClick={function(){ setSearch(""); }}><IcoX/></button>}
+            </div>
+
+            {/* ── Warranty filter pills ── */}
+            <div style={{padding:"0 16px 10px",display:"flex",gap:6,overflowX:"auto",scrollbarWidth:"none"}}>
+              {[["all","All","#64748b"],["in-progress","In Progress","#f59e0b"],["ready","Ready","#8b5cf6"],["completed","Done","#34d399"]].map(function(item){
+                const act = sFilter===item[0];
+                return <button key={item[0]} onClick={function(){ setSFilter(item[0]); }} style={{padding:"5px 14px",borderRadius:20,border:"1.5px solid "+(act?item[2]:item[2]+"33"),background:act?"#0f172a":"transparent",color:act?"#fff":item[2],fontSize:11,fontWeight:act?700:500,cursor:"pointer",fontFamily:"inherit",whiteSpace:"nowrap",flexShrink:0,transition:"all .15s"}}>{item[1]}</button>;
+              })}
+              <div style={{width:1,background:"#e2e8f0",margin:"0 4px",flexShrink:0}}/>
+              {[["warranty","Warranty","#10b981"],["over-warranty","OW","#f59e0b"]].map(function(item){
+                const act = wFilter===item[0];
+                return <button key={item[0]} onClick={function(){ setWFilter(item[0]===wFilter?"all":item[0]); }} style={{padding:"5px 14px",borderRadius:20,border:"1.5px solid "+(act?item[2]:item[2]+"33"),background:act?"#0f172a":"transparent",color:act?"#fff":item[2],fontSize:11,fontWeight:act?700:500,cursor:"pointer",fontFamily:"inherit",whiteSpace:"nowrap",flexShrink:0,transition:"all .15s"}}>{item[1]}</button>;
+              })}
+            </div>
+
+            <div style={{padding:"0 16px 8px",fontSize:11,color:"#94a3b8",fontWeight:500}}>{filtered.length} of {reports.length} reports</div>
+
+            {filtered.length===0 ? (
+              <div style={{textAlign:"center",padding:"60px 24px"}}>
+                <div style={{fontSize:52,marginBottom:12}}>🖨️</div>
+                <div style={{fontSize:16,fontWeight:700,color:"#475569",marginBottom:4}}>No reports found</div>
+                <div style={{fontSize:12,color:"#94a3b8"}}>Try adjusting your filters</div>
+              </div>
+            ) : (
+              <div style={{paddingTop:4}}>
+                {filtered.map(function(r){
+                  return <Card key={r.id} r={r} onClick={function(){ goDetail(r.id); }}/>;
+                })}
+              </div>
+            )}
+            <div style={{height:100}}/>
+          </div>
+        )}
+
+        {/* FORM */}
+        {view==="form" && (
+          <div className="slide-in" style={{paddingBottom:40,background:"#f1f5f9",minHeight:"100%"}}>
+            <Section title="Customer Information" icon="👤">
+              <Field label="Full Name *">
+                <input style={INP} name="customerName" value={form.customerName} onChange={hFC} placeholder="Customer name"/>
+              </Field>
+              <Field label="Phone">
+                <input style={INP} name="phone" value={form.phone} onChange={hFC} placeholder="+95 9 xxx" type="tel"/>
+              </Field>
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
+                <Field label="Arrived"><input style={INP} type="date" name="arrivedDate" value={form.arrivedDate} onChange={hFC}/></Field>
+                <Field label="Out Date"><input style={INP} type="date" name="outDate" value={form.outDate} onChange={hFC}/></Field>
+              </div>
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
+                <Field label="Warranty">
+                  <select style={INP} name="warranty" value={form.warranty} onChange={hFC}>
+                    <option value="over-warranty">Over Warranty</option>
+                    <option value="warranty">Warranty</option>
+                  </select>
+                </Field>
+                <Field label="CCC No.">
+                  <input style={INP} name="ccc" value={form.ccc} placeholder="00000" maxLength={5} inputMode="numeric"
+                    onChange={function(e){ setForm(function(f){ return {...f,ccc:e.target.value.replace(/\D/g,"").slice(0,5)}; }); }}/>
+                </Field>
+              </div>
+              <Field label="Job Status">
+                <div style={{display:"flex",gap:8,marginTop:4}}>
+                  {Object.entries(STATUS_MAP).map(function(entry){
+                    const k = entry[0], v = entry[1];
+                    return (
+                      <button key={k} onClick={function(){ setForm(function(f){ return {...f,status:k}; }); }}
+                        style={{flex:1,padding:"10px 4px",borderRadius:10,border:`1.5px solid ${form.status===k?v.dot:"#1e293b"}`,background:form.status===k?v.bg:"transparent",color:form.status===k?v.color:"#64748b",fontWeight:600,fontSize:11,cursor:"pointer",fontFamily:"inherit",textAlign:"center"}}>
+                        {v.label}
+                      </button>
+                    );
+                  })}
+                </div>
+              </Field>
+            </Section>
+
+            <Section title="Machine Details" icon="🖨️">
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
+                <Field label="Serial No. *">
+                  <div style={{display:"flex",gap:8}}>
+                    <input style={{...INP,flex:1}} name="serialNumber" value={form.serialNumber} onChange={hFC} placeholder="SN-XXXX"/>
+                    <button type="button" onClick={function(){ setScanning(true); }}
+                      title="Scan barcode"
+                      style={{flexShrink:0,width:44,height:44,borderRadius:10,border:"1.5px solid #FF6B2B",background:"rgba(255,107,43,0.08)",cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",fontSize:20}}>
+                      📷
+                    </button>
+                  </div>
+                </Field>
+                <Field label="Model">
+                  <input style={INP} name="model" value={form.model} onChange={hFC} placeholder="e.g. L3110, LQ-2190, EB-X500"/>
+                  {form.machineType && form.model && (
+                    <div style={{marginTop:6,display:"flex",alignItems:"center",gap:6}}>
+                      <span style={{fontSize:11,color:"#FF6B2B",fontWeight:600}}>Detected:</span>
+                      <span style={{fontSize:11,background:"rgba(255,107,43,0.1)",color:"#FF6B2B",padding:"2px 8px",borderRadius:6,fontWeight:700}}>
+                        {MACHINE_TYPES[form.machineType]?.icon} {MACHINE_TYPES[form.machineType]?.label}
+                      </span>
+                    </div>
+                  )}
+                </Field>
+              </div>
+              <Field label="Fault Symptoms">
+                <textarea style={{...INP,resize:"vertical",lineHeight:1.6}} name="faultSymptoms" value={form.faultSymptoms} onChange={hFC} placeholder="Describe the issue..." rows={3}/>
+              </Field>
+              <Field label="Technician Notes">
+                <textarea style={{...INP,resize:"vertical",lineHeight:1.6,borderColor:"#FF6B2B",background:"rgba(120,53,15,0.08)"}} name="notes" value={form.notes||""} onChange={hFC} placeholder="Internal notes..." rows={2}/>
+              </Field>
+            </Section>
+
+            <Section title="Parts Used" icon="🔩">
+              {form.parts.map(function(p,i){
+                return (
+                  <div key={i+"-"+p.itemNumber} style={{background:"#FFF8F5",border:"1px solid #F5F0EB",borderRadius:12,padding:14,marginBottom:12}}>
+                    <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
+                      <span style={{fontSize:11,fontWeight:700,color:"#FF6B2B",letterSpacing:1}}>PART {i+1}</span>
+                      {form.parts.length>1 && <button style={{background:"rgba(239,68,68,0.1)",border:"1px solid rgba(239,68,68,0.2)",color:"#EF4444",padding:"4px 10px",borderRadius:6,cursor:"pointer",fontSize:11,fontWeight:700,fontFamily:"inherit"}} onClick={function(){ remPart(i); }}>✕ Remove</button>}
+                    </div>
+                    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
+                      <Field label="Item No."><input style={INP} value={p.itemNumber} placeholder="P-001" onChange={function(e){ hPC(i,"itemNumber",e.target.value); }}/></Field>
+                      <Field label="Description"><input style={INP} value={p.description} placeholder="Part description" onChange={function(e){ hPC(i,"description",e.target.value); }}/></Field>
+                    </div>
+                    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
+                      <Field label="Qty"><input style={INP} type="number" min="1" value={p.qty} onChange={function(e){ hPC(i,"qty",e.target.value); }}/></Field>
+                      <Field label="Unit Price"><input style={INP} type="number" min="0" value={p.amount} placeholder="0" onChange={function(e){ hPC(i,"amount",e.target.value); }}/></Field>
+                    </div>
+                  </div>
+                );
+              })}
+              <button style={{width:"100%",background:"transparent",border:"2px dashed #FF6B2B",color:"#FF6B2B",padding:"12px",borderRadius:12,cursor:"pointer",fontSize:13,fontFamily:"inherit",fontWeight:600}} onClick={addPart}>+ Add Part</button>
+            </Section>
+
+            <Section title="Charges" icon="💰">
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
+                <Field label="Service Charges">
+                  <input style={INP} type="number" min="0" name="serviceCharges" value={form.serviceCharges} onChange={hFC} placeholder="0"/>
+                </Field>
+                <Field label="Total">
+                  <div style={{background:"#FFF8F5",border:"2px solid #FF6B2B",borderRadius:10,padding:"11px 14px",fontWeight:800,fontSize:16,color:"#FF6B2B"}}>{calcTotal(form)}</div>
+                </Field>
+              </div>
+            </Section>
+
+            <div style={{padding:"8px 16px 24px",display:"flex",gap:10}}>
+              <button style={BTN_CANCEL} onClick={function(){ setView("list"); setEditId(null); }}>Cancel</button>
+              <button style={BTN_SUBMIT} onClick={submit}>{editId?"Update Report":"Save Report"}</button>
+            </div>
+          </div>
+        )}
+
+        {/* DETAIL */}
+        {view==="detail" && sel && (
+          <div className="slide-in" style={{paddingBottom:100,background:"#f8fafc",minHeight:"100%"}}>
+
+            {/* ── Hero Card ── */}
+            <div style={{margin:"12px 16px",background:"#0f172a",borderRadius:20,padding:"28px 20px 24px",display:"flex",flexDirection:"column",alignItems:"center",textAlign:"center",boxShadow:"0 4px 20px rgba(0,0,0,.12)"}}>
+              {/* Avatar */}
+              <div style={{width:64,height:64,borderRadius:18,background:"rgba(255,255,255,0.1)",display:"flex",alignItems:"center",justifyContent:"center",marginBottom:14,fontSize:28}}>
+                🖨️
+              </div>
+              {/* Name & phone */}
+              <div style={{fontSize:22,fontWeight:800,color:"#fff",marginBottom:4}}>{sel.customerName}</div>
+              <div style={{fontSize:13,color:"rgba(255,255,255,0.45)",marginBottom:16}}>{sel.phone||""}</div>
+              {/* Pills */}
+              <div style={{display:"flex",gap:8,flexWrap:"wrap",justifyContent:"center"}}>
+                <StatusPill status={sel.status||"in-progress"}/>
+                <WPill w={sel.warranty}/>
+              </div>
+            </div>
+
+            {/* ── Model & Serial grid ── */}
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,margin:"0 16px 12px"}}>
+              {[["MODEL",sel.model||"—"],["SERIAL",sel.serialNumber||"—"],["CCC NO.",sel.ccc||"—"],["MACHINE",sel.machineType?MACHINE_TYPES[sel.machineType]?.label:"—"]].map(function(item){
+                return (
+                  <div key={item[0]} style={{background:"#fff",borderRadius:14,padding:"14px 16px",border:"1px solid #e8e0d8"}}>
+                    <div style={{fontSize:10,fontWeight:700,color:"#94a3b8",letterSpacing:1.5,marginBottom:6,textTransform:"uppercase"}}>{item[0]}</div>
+                    <div style={{fontSize:15,fontWeight:700,color:"#0f172a"}}>{item[1]}</div>
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* ── Dates ── */}
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,margin:"0 16px 12px"}}>
+              {[["ARRIVED",sel.arrivedDate||"—","#94a3b8"],["OUT DATE",sel.outDate||"—","#10b981"]].map(function(item){
+                return (
+                  <div key={item[0]} style={{background:"#fff",borderRadius:14,padding:"14px 16px",border:"1px solid #e8e0d8"}}>
+                    <div style={{fontSize:10,fontWeight:700,color:"#94a3b8",letterSpacing:1.5,marginBottom:6}}>{item[0]}</div>
+                    <div style={{fontSize:14,fontWeight:700,color:item[2]}}>{item[1]}</div>
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* ── Fault & Notes ── */}
+            {(sel.faultSymptoms || sel.notes) && (
+              <div style={{margin:"0 16px 12px",background:"#fff",borderRadius:14,padding:"16px",border:"1px solid #e8e0d8"}}>
+                {sel.faultSymptoms && (
+                  <div style={{marginBottom:sel.notes?14:0}}>
+                    <div style={{fontSize:10,fontWeight:700,color:"#94a3b8",letterSpacing:1.5,marginBottom:6,textTransform:"uppercase"}}>Fault Symptoms</div>
+                    <div style={{fontSize:14,color:"#475569",lineHeight:1.6}}>{sel.faultSymptoms}</div>
+                  </div>
+                )}
+                {sel.notes && (
+                  <div>
+                    <div style={{fontSize:10,fontWeight:700,color:"#FF6B2B",letterSpacing:1.5,marginBottom:6,textTransform:"uppercase"}}>📝 Technician Notes</div>
+                    <div style={{fontSize:14,color:"#475569",lineHeight:1.6}}>{sel.notes}</div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* ── Financial Receipt ── */}
+            <div style={{margin:"0 16px 12px",background:"#fff",borderRadius:14,padding:"18px 16px",border:"1px solid #e8e0d8"}}>
+              <div style={{fontSize:10,fontWeight:700,color:"#94a3b8",letterSpacing:1.5,marginBottom:8,textTransform:"uppercase"}}>Financial Receipt</div>
+              <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:20}}>
+                <div style={{fontSize:26,fontWeight:800,color:"#0f172a",fontStyle:"italic"}}>{calcTotal(sel)} <span style={{fontSize:16}}>MMK</span></div>
+                <div style={{background:"#FF6B2B",borderRadius:20,padding:"6px 14px",fontSize:10,fontWeight:800,color:"#fff",letterSpacing:1}}>INVOICE SUM</div>
+              </div>
+              <div style={{height:1,background:"#f1f5f9",marginBottom:14}}/>
+              {/* Parts rows */}
+              {sel.parts.filter(function(p){ return p.description; }).map(function(p,i){
+                const amt = (parseFloat(p.amount)||0)*(parseFloat(p.qty)||1);
+                return (
+                  <div key={i} style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
+                    <div>
+                      <div style={{fontSize:11,fontWeight:700,color:"#94a3b8",letterSpacing:1,textTransform:"uppercase"}}>Spare Part <span style={{color:"#cbd5e1"}}>×{p.qty||1}</span></div>
+                      <div style={{fontSize:12,color:"#64748b",marginTop:2}}>{p.description}</div>
+                    </div>
+                    <div style={{fontSize:15,fontWeight:700,color:"#0f172a"}}>{fmt(amt)}</div>
+                  </div>
+                );
+              })}
+              {sel.parts.length===0 && (
+                <div style={{fontSize:13,color:"#94a3b8",fontStyle:"italic",marginBottom:10}}>No parts recorded.</div>
+              )}
+              {parseFloat(sel.serviceCharges)>0 && (
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:4}}>
+                  <div style={{fontSize:11,fontWeight:700,color:"#94a3b8",letterSpacing:1,textTransform:"uppercase"}}>Labor / Service</div>
+                  <div style={{fontSize:15,fontWeight:700,color:"#0f172a"}}>{fmt(sel.serviceCharges)}</div>
+                </div>
+              )}
+            </div>
+
+            {/* ── Bottom Buttons ── */}
+            <div style={{position:"fixed",bottom:0,left:"50%",transform:"translateX(-50%)",width:"100%",maxWidth:480,padding:"12px 16px 24px",background:"#f8fafc",borderTop:"1px solid #e8e0d8",display:"flex",gap:10,zIndex:50}}>
+              <button onClick={function(){
+                  setConfirm({title:"Delete Report",msg:"Are you sure you want to delete this report?",onOk:function(){ goDel(sel.id); }});
+                }}
+                style={{width:48,padding:"15px 0",borderRadius:14,border:"1.5px solid rgba(239,68,68,0.25)",background:"rgba(239,68,68,0.07)",color:"#EF4444",fontWeight:700,fontSize:13,cursor:"pointer",fontFamily:"inherit",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}>
+                <IcoTrash/>
+              </button>
+              <button onClick={function(){ goEdit(sel); }}
+                style={{flex:1,padding:"15px",borderRadius:14,border:"1.5px solid #e8e0d8",background:"#fff",color:"#0f172a",fontWeight:700,fontSize:13,cursor:"pointer",fontFamily:"inherit",letterSpacing:.5}}>
+                UPDATE JOB
+              </button>
+              <button onClick={function(){
+                  const lines = ["PRINTSERV PRO - RECEIPT","","Customer: "+sel.customerName,"Phone: "+(sel.phone||"—"),"","Model: "+(sel.model||"—"),"Serial: "+(sel.serialNumber||"—"),"CCC: "+(sel.ccc||"—"),"","--- Parts ---"].concat(sel.parts.filter(function(p){return p.description;}).map(function(p){ return p.description+" x"+p.qty+" = "+fmt((parseFloat(p.amount)||0)*(parseFloat(p.qty)||1))+" MMK"; })).concat(["","Service: "+fmt(sel.serviceCharges)+" MMK","─────────────────","TOTAL: "+calcTotal(sel)+" MMK"]);
+                  alert(lines.join("\n"));
+                }}
+                style={{flex:2,padding:"15px",borderRadius:14,border:"none",background:"linear-gradient(135deg,#FF6B2B,#E85520)",color:"#fff",fontWeight:800,fontSize:13,cursor:"pointer",fontFamily:"inherit",letterSpacing:1}}>
+                RECEIPT
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* DASHBOARD */}
+        {view==="dashboard" && (
+          <div style={{paddingBottom:100,background:"#0f172a",minHeight:"100%"}}>
+
+            {/* ── Hero greeting + total value — Trantor style ── */}
+            <div style={{padding:"24px 20px 20px"}}>
+              <div style={{fontSize:13,color:"#475569",fontWeight:500,marginBottom:2}}>
+                {new Date().toLocaleDateString("en-US",{weekday:"long",month:"long",day:"numeric"})}
+              </div>
+              <div style={{fontSize:13,fontWeight:600,color:"#94a3b8",marginBottom:16}}>Total Revenue</div>
+              <div style={{display:"flex",alignItems:"flex-end",justifyContent:"space-between"}}>
+                <div>
+                  <div style={{fontSize:38,fontWeight:900,color:"#f8fafc",letterSpacing:-1,lineHeight:1}}>
+                    {totalRev.toLocaleString()}
+                  </div>
+                  <div style={{fontSize:14,color:"#475569",marginTop:6,fontWeight:500}}>MMK · Completed jobs</div>
+                </div>
+                <div style={{textAlign:"right"}}>
+                  <div style={{fontSize:11,color:"#34d399",fontWeight:700,background:"rgba(52,211,153,.12)",padding:"4px 10px",borderRadius:20,marginBottom:4}}>
+                    +{reports.filter(function(r){return r.status==="completed";}).length} done
+                  </div>
+                  <div style={{fontSize:11,color:"#475569"}}>{reports.length} total jobs</div>
+                </div>
+              </div>
+
+              {/* ── Transfer / Receive style pill actions ── */}
+              <div style={{display:"flex",gap:10,marginTop:22}}>
+                <div style={{flex:1,background:"rgba(255,255,255,.07)",borderRadius:16,padding:"14px 12px",textAlign:"center",border:"1px solid rgba(255,255,255,.06)"}}>
+                  <div style={{fontSize:22,fontWeight:900,color:"#f8fafc",lineHeight:1}}>{mRev.toLocaleString()}</div>
+                  <div style={{fontSize:10,color:"#475569",marginTop:5,fontWeight:600,letterSpacing:.5}}>THIS MONTH</div>
+                </div>
+                <div style={{flex:1,background:"rgba(255,107,43,.15)",borderRadius:16,padding:"14px 12px",textAlign:"center",border:"1px solid rgba(255,107,43,.2)"}}>
+                  <div style={{fontSize:22,fontWeight:900,color:"#FF6B2B",lineHeight:1}}>{pendingRev.toLocaleString()}</div>
+                  <div style={{fontSize:10,color:"#FF6B2B",marginTop:5,fontWeight:600,letterSpacing:.5,opacity:.7}}>PENDING</div>
+                </div>
+                <div style={{flex:1,background:"rgba(255,255,255,.07)",borderRadius:16,padding:"14px 12px",textAlign:"center",border:"1px solid rgba(255,255,255,.06)"}}>
+                  <div style={{fontSize:22,fontWeight:900,color:"#f8fafc",lineHeight:1}}>{activeCount}</div>
+                  <div style={{fontSize:10,color:"#475569",marginTop:5,fontWeight:600,letterSpacing:.5}}>ACTIVE</div>
+                </div>
+              </div>
+            </div>
+
+            {/* ── Charts — on dark background ── */}
+            <MonthlyCharts reports={reports} STATUS_MAP={STATUS_MAP} MACHINE_TYPES={MACHINE_TYPES}/>
+
+            {/* ── Recent Jobs — Trantor asset list style ── */}
+            <div style={{margin:"12px 16px 0",background:"rgba(255,255,255,.05)",borderRadius:20,border:"1px solid rgba(255,255,255,.07)",overflow:"hidden"}}>
+              <div style={{padding:"16px 18px 10px",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                <div style={{fontSize:13,fontWeight:700,color:"#94a3b8",letterSpacing:.5}}>Recent Jobs</div>
+                <div style={{fontSize:11,color:"#475569"}}>View All →</div>
+              </div>
+              {reports.length===0 ? (
+                <div style={{color:"#475569",fontSize:14,textAlign:"center",padding:"24px 0"}}>No reports yet.</div>
+              ) : reports.slice(0,5).map(function(r,i){
+                const s = STATUS_MAP[r.status]||STATUS_MAP["in-progress"];
+                return (
+                  <div key={r.id} onClick={function(){ goDetail(r.id); }}
+                    style={{display:"flex",alignItems:"center",gap:12,padding:"12px 18px",borderTop:"1px solid rgba(255,255,255,.05)",cursor:"pointer",WebkitTapHighlightColor:"transparent"}}>
+                    <div style={{width:40,height:40,borderRadius:"50%",background:"linear-gradient(135deg,"+s.accent+"40,"+s.accent+"18)",border:"1.5px solid "+s.accent+"44",display:"flex",alignItems:"center",justifyContent:"center",fontWeight:900,fontSize:15,color:s.accent,flexShrink:0}}>
+                      {r.customerName.charAt(0).toUpperCase()}
+                    </div>
+                    <div style={{flex:1,minWidth:0}}>
+                      <div style={{fontWeight:700,fontSize:14,color:"#f1f5f9",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{r.customerName}</div>
+                      <div style={{fontSize:11,color:"#475569",marginTop:2}}>{r.model}{r.ccc?" · "+r.ccc:""}</div>
+                    </div>
+                    <div style={{textAlign:"right",flexShrink:0}}>
+                      <div style={{fontWeight:800,color:"#f1f5f9",fontSize:14}}>{calcTotal(r)}</div>
+                      <div style={{marginTop:4}}><StatusPill status={r.status||"in-progress"} small={true}/></div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+          </div>
+        )}
+
+        {/* DAILY */}
+        {view==="daily" && (function(){
+          // Build 7-day week strip centred on dailyDate
+          const sel = new Date(dailyDate+"T00:00:00");
+          const dow = sel.getDay(); // 0=Sun
+          const weekDays = [];
+          for (var wi=-dow; wi<7-dow; wi++) {
+            const d = new Date(sel); d.setDate(sel.getDate()+wi);
+            weekDays.push(d.toISOString().split("T")[0]);
+          }
+          const DAY_LABELS = ["S","M","T","W","T","F","S"];
+          const monthLabel = sel.toLocaleDateString("en-US",{month:"long",year:"numeric"});
+          return (
+            <div style={{paddingBottom:100,background:"#0f172a",minHeight:"100%"}}>
+
+              {/* ── Dark hero header ── */}
+              <div style={{padding:"24px 18px 20px",position:"relative"}}>
+                <div style={{fontSize:11,color:"#475569",fontWeight:600,letterSpacing:1.5,textTransform:"uppercase",marginBottom:6}}>Daily Report</div>
+                <div style={{fontSize:28,fontWeight:900,color:"#f8fafc",letterSpacing:-.5,lineHeight:1,marginBottom:4}}>{monthLabel}</div>
+                <div style={{fontSize:14,color:"#FF6B2B",fontWeight:700}}>{sel.toLocaleDateString("en-US",{weekday:"long",day:"numeric"})}</div>
+                <input type="date" value={dailyDate} onChange={function(e){ setDailyDate(e.target.value); }}
+                  style={{opacity:0,position:"absolute",right:18,top:24,width:120,height:40,cursor:"pointer"}}/>
+              </div>
+
+              {/* ── Weekly calendar strip — pills, no card, full width ── */}
+              <div style={{display:"flex",gap:6,padding:"0 16px 20px"}}>
+                {weekDays.map(function(day,i){
+                  const isSelected = day===dailyDate;
+                  const isToday = day===today();
+                  const hasJobs = reports.some(function(r){ return r.arrivedDate===day||r.outDate===day; });
+                  const d = new Date(day+"T00:00:00");
+                  return (
+                    <div key={day} onClick={function(){ setDailyDate(day); }}
+                      style={{
+                        flex:1,
+                        display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",
+                        padding:"12px 0 10px",
+                        borderRadius:50,
+                        cursor:"pointer",
+                        background: isSelected
+                          ? "linear-gradient(170deg,#FF6B2B,#c94a14)"
+                          : isToday ? "rgba(255,107,43,.15)" : "rgba(255,255,255,.06)",
+                        border: isSelected ? "none"
+                          : isToday ? "1.5px solid rgba(255,107,43,.5)"
+                          : "1.5px solid rgba(255,255,255,.07)",
+                        boxShadow: isSelected ? "0 6px 20px rgba(255,107,43,.45)" : "none",
+                        transition:"background .2s ease, box-shadow .2s ease, transform .15s ease",
+                        transform: isSelected ? "scale(1.06)" : "scale(1)",
+                      }}>
+                      <span style={{
+                        fontSize:9,fontWeight:700,letterSpacing:.8,marginBottom:5,
+                        color:isSelected?"rgba(255,255,255,.7)":isToday?"#FF6B2B":"#475569",
+                        textTransform:"uppercase",transition:"color .2s"
+                      }}>
+                        {DAY_LABELS[i]}
+                      </span>
+                      <span style={{
+                        fontSize:18,fontWeight:isSelected?900:500,lineHeight:1,
+                        color:isSelected?"#fff":isToday?"#FF6B2B":"#64748b",
+                        transition:"color .2s, font-weight .2s"
+                      }}>
+                        {d.getDate()}
+                      </span>
+                      <div style={{height:6,marginTop:5,display:"flex",alignItems:"center",justifyContent:"center"}}>
+                        {hasJobs
+                          ? <div style={{width:5,height:5,borderRadius:"50%",background:isSelected?"rgba(255,255,255,.85)":"#FF6B2B",transition:"background .2s"}}/>
+                          : <div style={{width:5,height:5}}/>
+                        }
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+
+              {/* ── Stats row ── */}
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,margin:"0 16px 14px"}}>
+                <div style={{background:"rgba(255,255,255,.07)",borderRadius:16,padding:"16px",border:"1px solid rgba(255,255,255,.07)"}}>
+                  <div style={{fontSize:10,fontWeight:700,color:"#475569",letterSpacing:1.2,marginBottom:8,textTransform:"uppercase"}}>Jobs</div>
+                  <div style={{fontSize:30,fontWeight:900,color:"#f8fafc",lineHeight:1}}>{dReports.length}</div>
+                  <div style={{fontSize:11,color:"#475569",marginTop:6}}>{dReports.filter(function(r){return r.arrivedDate===dailyDate;}).length} in · {dReports.filter(function(r){return r.outDate===dailyDate;}).length} out</div>
+                </div>
+                <div style={{background:"rgba(52,211,153,.1)",borderRadius:16,padding:"16px",border:"1px solid rgba(52,211,153,.15)"}}>
+                  <div style={{fontSize:10,fontWeight:700,color:"#34d399",letterSpacing:1.2,marginBottom:8,textTransform:"uppercase",opacity:.8}}>Revenue</div>
+                  <div style={{fontSize:24,fontWeight:900,color:"#34d399",lineHeight:1}}>{dRev.toLocaleString()}</div>
+                  <div style={{fontSize:11,color:"#34d399",marginTop:6,opacity:.6}}>MMK collected</div>
+                </div>
+              </div>
+
+              {/* ── Jobs list ── */}
+              {dReports.length===0 ? (
+                <div style={{textAlign:"center",padding:"40px 24px"}}>
+                  <div style={{fontSize:48,marginBottom:10}}>📭</div>
+                  <div style={{fontSize:16,fontWeight:700,color:"#64748b",marginBottom:4}}>No jobs on this date</div>
+                  <div style={{fontSize:12,color:"#475569"}}>Tap another day above</div>
+                </div>
+              ) : (
+                <div>
+                  <div style={{padding:"0 16px",fontSize:11,fontWeight:700,color:"#475569",letterSpacing:1.5,textTransform:"uppercase",marginBottom:8}}>
+                    {dReports.length} Job{dReports.length!==1?"s":""} · {dailyDate}
+                  </div>
+                  {dReports.map(function(r){
+                    const s = STATUS_MAP[r.status]||STATUS_MAP["in-progress"];
+                    return (
+                      <div key={r.id}
+                        onClick={function(){ goDetail(r.id); }}
+                        style={{margin:"0 16px 10px",borderRadius:20,background:"rgba(255,255,255,.06)",border:"1px solid rgba(255,255,255,.08)",cursor:"pointer",WebkitTapHighlightColor:"transparent"}}>
+                        <div style={{padding:"14px 16px"}}>
+                          <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:10}}>
+                            <div style={{width:42,height:42,borderRadius:"50%",background:"linear-gradient(135deg,"+s.accent+"40,"+s.accent+"18)",border:"2px solid "+s.accent+"44",display:"flex",alignItems:"center",justifyContent:"center",fontWeight:900,fontSize:16,color:s.accent,flexShrink:0}}>
+                              {r.customerName.charAt(0).toUpperCase()}
+                            </div>
+                            <div style={{flex:1,minWidth:0}}>
+                              <div style={{fontWeight:700,fontSize:14,color:"#f1f5f9",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{r.customerName}</div>
+                              <div style={{fontSize:11,color:"#475569",marginTop:2}}>{r.model}{r.ccc?" · CCC: "+r.ccc:""}</div>
+                            </div>
+                            <div style={{textAlign:"right",flexShrink:0}}>
+                              <div style={{fontWeight:900,color:"#f1f5f9",fontSize:15,letterSpacing:-.3}}>{calcTotal(r)}</div>
+                              <div style={{fontSize:10,color:"#475569",marginTop:1}}>MMK</div>
+                            </div>
+                          </div>
+                          <div style={{display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+                            <StatusPill status={r.status||"in-progress"} small={true}/>
+                            <div style={{display:"flex",gap:6}}>
+                              {r.arrivedDate===dailyDate && <span style={{fontSize:10,color:"#94a3b8",background:"rgba(255,255,255,.07)",padding:"3px 9px",borderRadius:20,fontWeight:600}}>📥 In</span>}
+                              {r.outDate===dailyDate && <span style={{fontSize:10,color:"#34d399",background:"rgba(52,211,153,.12)",padding:"3px 9px",borderRadius:20,fontWeight:600}}>📤 Out</span>}
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          );
+        })()}
+
+        {/* BACKUP */}
+        {view==="backup" && (
+          <div style={{paddingBottom:90,background:"#f1f5f9",minHeight:"100%"}}>
+
+            {/* ── Data Security Card ── */}
+            <div style={{margin:"16px 16px 12px",background:"#ffffff",borderRadius:20,padding:"32px 24px 24px",boxShadow:"0 1px 6px rgba(0,0,0,.06)",textAlign:"center"}}>
+
+              {/* Icon */}
+              <div style={{width:72,height:72,borderRadius:"50%",background:"#eff6ff",display:"flex",alignItems:"center",justifyContent:"center",margin:"0 auto 20px"}}>
+                <svg width={34} height={34} viewBox="0 0 24 24" fill="none" stroke="#3b82f6" strokeWidth={1.75} strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M19 21H5a2 2 0 01-2-2V5a2 2 0 012-2h11l5 5v11a2 2 0 01-2 2z"/>
+                  <path d="M17 21v-8H7v8M7 3v5h8"/>
+                </svg>
+              </div>
+
+              <div style={{fontSize:20,fontWeight:800,color:"#0f172a",marginBottom:10}}>Data Security</div>
+              <div style={{fontSize:14,color:"#94a3b8",lineHeight:1.6,marginBottom:28}}>Download your service history as a backup file or restore data from a previous backup.</div>
+
+              {/* Export button */}
+              <button
+                onClick={function(){
+                  const blob = new Blob([JSON.stringify(reports,null,2)],{type:"application/json"});
+                  const url = URL.createObjectURL(blob);
+                  const a = document.createElement("a");
+                  a.href=url; a.download="printserv-backup-"+new Date().toISOString().slice(0,10)+".json"; a.click();
+                  URL.revokeObjectURL(url);
+                  localStorage.setItem("printserv_lastbackup",new Date().toLocaleDateString());
+                  alert("Backup downloaded! ("+reports.length+" reports)");
+                }}
+                style={{width:"100%",padding:"16px",borderRadius:14,border:"none",background:"#0f172a",color:"#fff",fontWeight:700,fontSize:15,cursor:"pointer",fontFamily:"inherit",display:"flex",alignItems:"center",justifyContent:"center",gap:10,marginBottom:12}}>
+                <svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                Export Data
+              </button>
+
+              {/* Import button */}
+              <label style={{width:"100%",padding:"16px",borderRadius:14,border:"1.5px solid #e2e8f0",background:"#fff",color:"#0f172a",fontWeight:700,fontSize:15,cursor:"pointer",fontFamily:"inherit",display:"flex",alignItems:"center",justifyContent:"center",gap:10,boxSizing:"border-box"}}>
+                <svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="#0f172a" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 5 17 10"/><line x1="12" y1="5" x2="12" y2="17"/></svg>
+                Import Data
+                <input type="file" accept=".json" style={{display:"none"}} onChange={function(e){
+                  const f = e.target.files[0]; if(!f) return;
+                  const reader = new FileReader();
+                  reader.onload = function(ev){
+                    try {
+                      const d = JSON.parse(ev.target.result);
+                      if(!Array.isArray(d)) { alert("Invalid file."); return; }
+                      setReports(d);
+                      alert("Restore successful! "+d.length+" reports loaded.");
+                    } catch(err) { alert("Could not read file."); }
+                  };
+                  reader.readAsText(f);
+                  e.target.value = "";
+                }}/>
+              </label>
+            </div>
+
+            {/* ── Danger Zone ── */}
+            <div style={{margin:"0 16px 12px",background:"#fff0f0",borderRadius:20,padding:"20px 24px"}}>
+              <div style={{fontSize:11,fontWeight:800,color:"#f43f5e",letterSpacing:2,textTransform:"uppercase",textAlign:"center",marginBottom:14}}>Danger Zone</div>
+              <button
+                onClick={function(){
+                  setConfirm({title:"Clear All Database",msg:"This will permanently delete all "+reports.length+" reports. This cannot be undone.",onOk:function(){ setReports([]); }});
+                }}
+                style={{width:"100%",padding:"16px",borderRadius:14,border:"none",background:"#f43f5e",color:"#fff",fontWeight:700,fontSize:15,cursor:"pointer",fontFamily:"inherit"}}>
+                Clear All Database
+              </button>
+            </div>
+
+          </div>
+        )}
+      </div>
+
+      {/* Bottom nav — Trantor floating dark pill */}
+      {isMain && (
+        <div style={{background:"#0f172a",display:"flex",flexShrink:0,padding:"8px 12px 20px",gap:4}}>
+          {[
+            {v:"list",      ico:<IcoList  c={view==="list"?"#FF6B2B":"#475569"}/>,      label:"Jobs"},
+            {v:"dashboard", ico:<IcoGrid  c={view==="dashboard"?"#FF6B2B":"#475569"}/>, label:"Stats"},
+            {v:"__fab__",   ico:null, label:""},
+            {v:"daily",     ico:<IcoCal  c={view==="daily"?"#FF6B2B":"#475569"}/>,     label:"Daily"},
+            {v:"backup",    ico:<IcoSave c={view==="backup"?"#FF6B2B":"#475569"}/>,    label:"Backup"},
+          ].map(function(item){
+            if(item.v==="__fab__") return (
+              <div key="fab" style={{flex:1,display:"flex",alignItems:"center",justifyContent:"center"}}>
+                <button onClick={goNew} style={{width:52,height:52,borderRadius:16,background:"linear-gradient(135deg,#FF6B2B,#e85520)",border:"3px solid #0f172a",cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",boxShadow:"0 0 20px rgba(255,107,43,.6)",marginBottom:8}}>
+                  <IcoPlus/>
+                </button>
+              </div>
+            );
+            const active = view===item.v;
+            return (
+              <button key={item.v} style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",paddingTop:6,background:"transparent",border:"none",cursor:"pointer",fontFamily:"inherit",gap:4}} onClick={function(){ navTo(item.v); }}>
+                <div style={{width:40,height:34,borderRadius:12,background:active?"rgba(255,107,43,.18)":"transparent",display:"flex",alignItems:"center",justifyContent:"center",transition:"background .15s"}}>
+                  {item.ico}
+                </div>
+                <span style={{fontSize:10,fontWeight:active?700:400,color:active?"#FF6B2B":"#475569",letterSpacing:.3}}>{item.label}</span>
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+
+    // Mount the app
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(<App />);
+  </script>
+
+  <!-- Service Worker registration for offline support -->
+  <script>
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', function() {
+        navigator.serviceWorker.register('sw.js')
+          .then(function(reg) { console.log('SW registered'); })
+          .catch(function(err) { console.log('SW failed:', err); });
+      });
+    }
+  </script>
+</body>
+</html>
