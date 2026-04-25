@@ -1,4 +1,4 @@
-const CACHE = 'printserv-v1';
+const CACHE = 'printserv-v2';// was'printserv-v1'
 const ASSETS = ['/'];
 
 self.addEventListener('install', function(e) {
